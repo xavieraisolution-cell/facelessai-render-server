@@ -69,7 +69,7 @@ function ffmpeg(args, timeout = 300000) {
 }
 
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', service: 'FacelessAI Render Server v3.4', ffmpeg: getFfmpegVersion() });
+  res.json({ status: 'ok', service: 'FacelessAI Render Server v3.5', ffmpeg: getFfmpegVersion() });
 });
 
 app.get('/health', (req, res) => {
@@ -137,7 +137,7 @@ async function renderVideo({ audio_url, clips, language, job_id }) {
     const concatListPath = path.join(workDir, 'clips.txt');
     let concatContent = '';
     let totalDuration = 0;
-    const targetDuration = audioDuration + 10;
+    const targetDuration = audioDuration + 60; // margem de 60s
     let pass = 0;
     while (totalDuration < targetDuration && pass < 10) {
       const shuffled = [...clipPaths].sort(() => Math.random() - 0.5);
@@ -164,7 +164,7 @@ async function renderVideo({ audio_url, clips, language, job_id }) {
       '-map', '0:v:0', '-map', '1:a:0',
       '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '35',
       '-c:a', 'aac', '-b:a', '96k',
-      '-t', String(Math.min(audioDuration, 600)),
+      '-shortest',
       '-vf', 'scale=854:480:force_original_aspect_ratio=decrease,pad=854:480:(ow-iw)/2:(oh-ih)/2,setsar=1',
       '-movflags', '+faststart', outputPath
     ], 600000);
@@ -272,7 +272,7 @@ function getFfmpegVersion() {
 }
 
 app.listen(PORT, () => {
-  console.log(`🎬 FacelessAI Render Server v3.4 na porta ${PORT}`);
+  console.log(`🎬 FacelessAI Render Server v3.5 na porta ${PORT}`);
   console.log(`FFmpeg: ${getFfmpegVersion()}`);
   console.log(`Supabase: ${SUPABASE_URL ? 'configurado' : 'NÃO configurado'}`);
 });
