@@ -1,16 +1,5 @@
 const express = require('express');
-const { execSync, spawnSync } = require('child_process');
-
-function ffmpeg(args, timeout = 300000) {
-  const result = spawnSync('ffmpeg', args, {
-    stdio: ['ignore', 'ignore', 'pipe'],
-    timeout,
-    maxBuffer: 100 * 1024 * 1024
-  });
-  if (result.status !== 0) {
-    throw new Error(`FFmpeg failed: ${(result.stderr || '').toString().slice(-500)}`);
-  }
-}
+const { spawnSync } = require('child_process');
 const https = require('https');
 const http = require('http');
 const fs = require('fs');
@@ -23,69 +12,101 @@ const PORT = process.env.PORT || 3000;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
 
-// ── Job persistence (arquivo em vez de memória RAM) ──────────────────────────
-const JOBS_DIR = '/tmp/facelessai_jobs';
-if (!fs.existsSync(JOBS_DIR)) fs.mkdirSync(JOBS_DIR, { recursive: true });
-
-function saveJob(job_id, data) {
-  try { fs.writeFileSync(path.join(JOBS_DIR, `${job_id}.json`), JSON.stringify(data)); }
-  catch(e) { console.error('saveJob error:', e.message); }
+// ── Job persistence via Supabase (sobrevive hibernação) ──────────────────────
+async function saveJob(job_id, data) {
+  try {
+    const body = JSON.stringify({ job_id, data: JSON.stringify(data), updated_at: new Date().toISOString() });
+    await supabaseRequest('POST', '/rest/v1/facelessai_jobs', body, {
+      'Prefer': 'resolution=merge-duplicates'
+    });
+  } catch(e) { console.error('saveJob error:', e.message); }
 }
 
-function getJob(job_id) {
+async function getJob(job_id) {
   try {
-    const file = path.join(JOBS_DIR, `${job_id}.json`);
-    if (!fs.existsSync(file)) return null;
-    return JSON.parse(fs.readFileSync(file, 'utf8'));
-  } catch(e) { return null; }
+    const result = await supabaseRequest('GET', `/rest/v1/facelessai_jobs?job_id=eq.${job_id}&select=data`);
+    const rows = JSON.parse(result);
+    if (!rows || rows.length === 0) return null;
+    return JSON.parse(rows[0].data);
+  } catch(e) { console.error('getJob error:', e.message); return null; }
+}
+
+function supabaseRequest(method, endpoint, body, extraHeaders = {}) {
+  return new Promise((resolve, reject) => {
+    const urlObj = new URL(SUPABASE_URL + endpoint);
+    const options = {
+      hostname: urlObj.hostname,
+      path: urlObj.pathname + urlObj.search,
+      method,
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${SUPABASE_KEY}`,
+        'Content-Type': 'application/json',
+        ...extraHeaders
+      }
+    };
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => resolve(data));
+    });
+    req.on('error', reject);
+    if (body) req.write(body);
+    req.end();
+  });
 }
 // ─────────────────────────────────────────────────────────────────────────────
 
+function ffmpeg(args, timeout = 300000) {
+  const result = spawnSync('ffmpeg', args, {
+    stdio: ['ignore', 'ignore', 'pipe'],
+    timeout,
+    maxBuffer: 100 * 1024 * 1024
+  });
+  if (result.status !== 0) {
+    throw new Error(`FFmpeg failed: ${(result.stderr || '').toString().slice(-500)}`);
+  }
+}
+
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', service: 'FacelessAI Render Server v3.3', ffmpeg: getFfmpegVersion() });
+  res.json({ status: 'ok', service: 'FacelessAI Render Server v3.4', ffmpeg: getFfmpegVersion() });
 });
 
 app.get('/health', (req, res) => {
   res.json({ status: 'healthy', timestamp: new Date().toISOString() });
 });
 
-// Check job status
-app.get('/status/:job_id', (req, res) => {
-  const job = getJob(req.params.job_id);
+app.get('/status/:job_id', async (req, res) => {
+  const job = await getJob(req.params.job_id);
   if (!job) return res.status(404).json({ error: 'Job not found' });
   res.json(job);
 });
 
-// Start render - responds immediately, processes in background
-app.post('/render', (req, res) => {
+app.post('/render', async (req, res) => {
   const { audio_url, clips, language, job_id } = req.body;
 
   if (!audio_url || !clips || clips.length === 0 || !job_id) {
-    return res.status(400).json({ 
+    return res.status(400).json({
       error: 'Missing fields',
       received: { audio_url: !!audio_url, clips: (clips||[]).length, job_id: !!job_id }
     });
   }
 
-  // Respond immediately
-  const initialJob = { status: 'processing', job_id, started_at: new Date().toISOString() };
-  saveJob(job_id, initialJob);
+  await saveJob(job_id, { status: 'processing', job_id, started_at: new Date().toISOString() });
   res.json({ success: true, job_id, status: 'processing', message: 'Render started' });
 
-  // Process in background
-  renderVideo({ audio_url, clips, language, job_id }).catch(err => {
+  renderVideo({ audio_url, clips, language, job_id }).catch(async err => {
     console.error(`[${job_id}] Fatal error:`, err.message);
-    saveJob(job_id, { status: 'error', job_id, error: err.message });
+    await saveJob(job_id, { status: 'error', job_id, error: err.message });
   });
 });
 
 async function renderVideo({ audio_url, clips, language, job_id }) {
   const workDir = `/tmp/${job_id}`;
-  
+
   try {
     fs.mkdirSync(workDir, { recursive: true });
     console.log(`[${job_id}] Iniciando render...`);
-    console.log(`[${job_id}] Clips: ${clips.length}, Audio: ${audio_url ? 'sim' : 'não'}`);
 
     // Download audio
     const audioPath = path.join(workDir, 'audio.mpga');
@@ -96,13 +117,12 @@ async function renderVideo({ audio_url, clips, language, job_id }) {
     const audioDuration = getAudioDuration(audioPath);
     console.log(`[${job_id}] Duração: ${audioDuration}s`);
 
-    // Download clips — baixa todos os clips disponíveis (até 20)
+    // Download clips
     const clipPaths = [];
     for (let i = 0; i < Math.min(clips.length, 20); i++) {
       const clipPath = path.join(workDir, `clip_${i}.mp4`);
       try {
         await downloadFile(clips[i].url, clipPath);
-        // Verifica duração real do clip
         const realDur = getAudioDuration(clipPath);
         clipPaths.push({ path: clipPath, duration: realDur || clips[i].duration || 10 });
         console.log(`[${job_id}] Clip ${i+1} OK (${realDur}s)`);
@@ -113,14 +133,13 @@ async function renderVideo({ audio_url, clips, language, job_id }) {
 
     if (clipPaths.length === 0) throw new Error('Nenhum clip baixado');
 
-    // Concat list — repete clips de forma embaralhada para cobrir o áudio completo
+    // Concat list embaralhada
     const concatListPath = path.join(workDir, 'clips.txt');
     let concatContent = '';
     let totalDuration = 0;
-    const targetDuration = audioDuration + 10; // margem de 10s
+    const targetDuration = audioDuration + 10;
     let pass = 0;
-    while (totalDuration < targetDuration) {
-      // Embaralha os clips a cada passagem para variar
+    while (totalDuration < targetDuration && pass < 10) {
       const shuffled = [...clipPaths].sort(() => Math.random() - 0.5);
       for (const clip of shuffled) {
         if (totalDuration >= targetDuration) break;
@@ -128,9 +147,8 @@ async function renderVideo({ audio_url, clips, language, job_id }) {
         totalDuration += clip.duration;
       }
       pass++;
-      if (pass > 10) break; // segurança
     }
-    console.log(`[${job_id}] Total video duration: ${totalDuration}s para audio de ${audioDuration}s`);
+    console.log(`[${job_id}] Video total: ${totalDuration}s para audio de ${audioDuration}s`);
     fs.writeFileSync(concatListPath, concatContent);
 
     // Concatenate
@@ -138,7 +156,7 @@ async function renderVideo({ audio_url, clips, language, job_id }) {
     console.log(`[${job_id}] Concatenando...`);
     ffmpeg(['-y', '-f', 'concat', '-safe', '0', '-i', concatListPath, '-c', 'copy', rawVideoPath], 120000);
 
-    // Merge
+    // Merge audio + video
     const outputPath = path.join(workDir, 'output.mp4');
     console.log(`[${job_id}] Renderizando...`);
     ffmpeg([
@@ -154,18 +172,17 @@ async function renderVideo({ audio_url, clips, language, job_id }) {
     const videoSize = fs.statSync(outputPath).size;
     console.log(`[${job_id}] Vídeo: ${videoSize} bytes`);
 
-    // Upload to Supabase
+    // Upload to Supabase Storage
     const videoBuffer = fs.readFileSync(outputPath);
     const videoFileName = `${job_id}.mp4`;
     const uploadUrl = `${SUPABASE_URL}/storage/v1/object/facelessai-video/${videoFileName}`;
-    
     console.log(`[${job_id}] Upload Supabase...`);
     await uploadToSupabase(uploadUrl, videoBuffer, SUPABASE_KEY);
 
     const videoUrl = `${SUPABASE_URL}/storage/v1/object/public/facelessai-video/${videoFileName}`;
     console.log(`[${job_id}] Concluído: ${videoUrl}`);
 
-    saveJob(job_id, {
+    await saveJob(job_id, {
       status: 'completed',
       job_id,
       video_url: videoUrl,
@@ -178,7 +195,7 @@ async function renderVideo({ audio_url, clips, language, job_id }) {
 
   } catch(error) {
     console.error(`[${job_id}] Erro:`, error.message);
-    saveJob(job_id, { status: 'error', job_id, error: error.message });
+    await saveJob(job_id, { status: 'error', job_id, error: error.message });
     try { fs.rmSync(workDir, { recursive: true, force: true }); } catch(e) {}
   }
 }
@@ -231,27 +248,20 @@ function downloadFile(url, destPath) {
 
 function getAudioDuration(filePath) {
   try {
-    // Tenta primeiro com show_entries format
     const result = spawnSync('ffprobe', [
       '-v', 'quiet', '-show_entries', 'format=duration',
       '-of', 'csv=p=0', filePath
     ], { timeout: 15000, maxBuffer: 1024 * 1024 });
     const val = parseFloat(result.stdout.toString().trim());
     if (val && val > 0) return val;
-    
-    // Fallback: tenta com stream duration
     const result2 = spawnSync('ffprobe', [
       '-v', 'quiet', '-show_entries', 'stream=duration',
       '-of', 'csv=p=0', filePath
     ], { timeout: 15000, maxBuffer: 1024 * 1024 });
     const val2 = parseFloat(result2.stdout.toString().trim());
     if (val2 && val2 > 0) return val2;
-    
-    return 300; // fallback 5min
-  } catch(e) { 
-    console.error('getAudioDuration error:', e.message);
-    return 300; 
-  }
+    return 300;
+  } catch(e) { return 300; }
 }
 
 function getFfmpegVersion() {
@@ -262,7 +272,7 @@ function getFfmpegVersion() {
 }
 
 app.listen(PORT, () => {
-  console.log(`🎬 FacelessAI Render Server v3.3 na porta ${PORT}`);
+  console.log(`🎬 FacelessAI Render Server v3.4 na porta ${PORT}`);
   console.log(`FFmpeg: ${getFfmpegVersion()}`);
   console.log(`Supabase: ${SUPABASE_URL ? 'configurado' : 'NÃO configurado'}`);
 });
