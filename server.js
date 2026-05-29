@@ -5,55 +5,67 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
-
 const app = express();
 app.use(express.json({ limit: '50mb' }));
 
 const PORT = process.env.PORT || 3000;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
-const AUTH_KEY = process.env.AUTH_KEY || 'facelessai2026xaviersecretkey32x';
 
-// Health check
+// In-memory job status store
+const jobs = {};
+
 app.get('/', (req, res) => {
-  res.json({ 
-    status: 'ok', 
-    service: 'FacelessAI FFmpeg Render Server',
-    version: '2.0.0',
-    ffmpeg: getFfmpegVersion()
-  });
+  res.json({ status: 'ok', service: 'FacelessAI Render Server v3.0', ffmpeg: getFfmpegVersion() });
 });
 
 app.get('/health', (req, res) => {
   res.json({ status: 'healthy', timestamp: new Date().toISOString() });
 });
 
-// Main render endpoint
-app.post('/render', async (req, res) => {
-  const { audio_url, clips, language, job_id } = req.body;
+// Check job status
+app.get('/status/:job_id', (req, res) => {
+  const job = jobs[req.params.job_id];
+  if (!job) return res.status(404).json({ error: 'Job not found' });
+  res.json(job);
+});
 
-  console.log(`[${job_id}] Iniciando render...`);
-  console.log(`[${job_id}] Clips: ${(clips || []).length}, Audio: ${audio_url ? 'sim' : 'não'}`);
+// Start render - responds immediately, processes in background
+app.post('/render', (req, res) => {
+  const { audio_url, clips, language, job_id } = req.body;
 
   if (!audio_url || !clips || clips.length === 0 || !job_id) {
     return res.status(400).json({ 
-      error: 'Missing required fields: audio_url, clips, job_id',
+      error: 'Missing fields',
       received: { audio_url: !!audio_url, clips: (clips||[]).length, job_id: !!job_id }
     });
   }
 
+  // Respond immediately
+  jobs[job_id] = { status: 'processing', job_id, started_at: new Date().toISOString() };
+  res.json({ success: true, job_id, status: 'processing', message: 'Render started' });
+
+  // Process in background
+  renderVideo({ audio_url, clips, language, job_id }).catch(err => {
+    console.error(`[${job_id}] Fatal error:`, err.message);
+    jobs[job_id] = { status: 'error', job_id, error: err.message };
+  });
+});
+
+async function renderVideo({ audio_url, clips, language, job_id }) {
   const workDir = `/tmp/${job_id}`;
   
   try {
     fs.mkdirSync(workDir, { recursive: true });
+    console.log(`[${job_id}] Iniciando render...`);
+    console.log(`[${job_id}] Clips: ${clips.length}, Audio: ${audio_url ? 'sim' : 'não'}`);
 
     // Download audio
-    console.log(`[${job_id}] Baixando áudio: ${audio_url}`);
     const audioPath = path.join(workDir, 'audio.mpga');
+    console.log(`[${job_id}] Baixando áudio...`);
     await downloadFile(audio_url, audioPath);
-    console.log(`[${job_id}] Áudio baixado: ${fs.statSync(audioPath).size} bytes`);
+    console.log(`[${job_id}] Áudio: ${fs.statSync(audioPath).size} bytes`);
 
-    // Get audio duration
     const audioDuration = getAudioDuration(audioPath);
     console.log(`[${job_id}] Duração: ${audioDuration}s`);
 
@@ -64,15 +76,15 @@ app.post('/render', async (req, res) => {
       try {
         await downloadFile(clips[i].url, clipPath);
         clipPaths.push({ path: clipPath, duration: clips[i].duration || 10 });
-        console.log(`[${job_id}] Clip ${i+1} baixado`);
-      } catch (e) {
+        console.log(`[${job_id}] Clip ${i+1} OK`);
+      } catch(e) {
         console.error(`[${job_id}] Clip ${i} falhou:`, e.message);
       }
     }
 
     if (clipPaths.length === 0) throw new Error('Nenhum clip baixado');
 
-    // Build concat list
+    // Concat list
     const concatListPath = path.join(workDir, 'clips.txt');
     let concatContent = '';
     let totalDuration = 0;
@@ -85,58 +97,57 @@ app.post('/render', async (req, res) => {
     }
     fs.writeFileSync(concatListPath, concatContent);
 
-    // Concatenate clips
+    // Concatenate
     const rawVideoPath = path.join(workDir, 'raw.mp4');
-    console.log(`[${job_id}] Concatenando clips...`);
+    console.log(`[${job_id}] Concatenando...`);
     execSync(`ffmpeg -y -f concat -safe 0 -i "${concatListPath}" -c copy "${rawVideoPath}"`, { timeout: 120000 });
 
-    // Merge audio + video
+    // Merge
     const outputPath = path.join(workDir, 'output.mp4');
-    console.log(`[${job_id}] Renderizando vídeo final...`);
+    console.log(`[${job_id}] Renderizando...`);
     execSync(
       `ffmpeg -y -i "${rawVideoPath}" -i "${audioPath}" ` +
       `-map 0:v:0 -map 1:a:0 ` +
-      `-c:v libx264 -preset fast -crf 23 ` +
-      `-c:a aac -b:a 192k ` +
-      `-t ${audioDuration} ` +
-      `-vf "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1" ` +
+      `-c:v libx264 -preset ultrafast -crf 28 ` +
+      `-c:a aac -b:a 128k ` +
+      `-t ${Math.min(audioDuration, 600)} ` +
+      `-vf "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1" ` +
       `-movflags +faststart "${outputPath}"`,
-      { timeout: 300000 }
+      { timeout: 600000 }
     );
 
     const videoSize = fs.statSync(outputPath).size;
-    console.log(`[${job_id}] Vídeo renderizado: ${videoSize} bytes`);
+    console.log(`[${job_id}] Vídeo: ${videoSize} bytes`);
 
-    // Upload to Supabase via REST API (no SDK needed)
+    // Upload to Supabase
     const videoBuffer = fs.readFileSync(outputPath);
     const videoFileName = `${job_id}.mp4`;
     const uploadUrl = `${SUPABASE_URL}/storage/v1/object/facelessai-videos/${videoFileName}`;
     
-    console.log(`[${job_id}] Fazendo upload para Supabase...`);
+    console.log(`[${job_id}] Upload Supabase...`);
     await uploadToSupabase(uploadUrl, videoBuffer, SUPABASE_KEY);
 
     const videoUrl = `${SUPABASE_URL}/storage/v1/object/public/facelessai-videos/${videoFileName}`;
-    console.log(`[${job_id}] Upload concluído: ${videoUrl}`);
+    console.log(`[${job_id}] Concluído: ${videoUrl}`);
 
-    // Cleanup
-    fs.rmSync(workDir, { recursive: true, force: true });
-
-    res.json({
-      success: true,
+    jobs[job_id] = {
+      status: 'completed',
       job_id,
       video_url: videoUrl,
       duration: audioDuration,
-      size: videoSize
-    });
+      size: videoSize,
+      completed_at: new Date().toISOString()
+    };
 
-  } catch (error) {
+    fs.rmSync(workDir, { recursive: true, force: true });
+
+  } catch(error) {
     console.error(`[${job_id}] Erro:`, error.message);
+    jobs[job_id] = { status: 'error', job_id, error: error.message };
     try { fs.rmSync(workDir, { recursive: true, force: true }); } catch(e) {}
-    res.status(500).json({ success: false, job_id, error: error.message });
   }
-});
+}
 
-// Upload via native HTTPS (no SDK)
 function uploadToSupabase(url, buffer, key) {
   return new Promise((resolve, reject) => {
     const urlObj = new URL(url);
@@ -174,15 +185,12 @@ function downloadFile(url, destPath) {
         file.close();
         return downloadFile(response.headers.location, destPath).then(resolve).catch(reject);
       }
-      if (response.statusCode !== 200) {
-        reject(new Error(`HTTP ${response.statusCode}`));
-        return;
-      }
+      if (response.statusCode !== 200) { reject(new Error(`HTTP ${response.statusCode}`)); return; }
       response.pipe(file);
       file.on('finish', () => { file.close(); resolve(); });
     });
     request.on('error', (err) => { fs.unlink(destPath, () => {}); reject(err); });
-    request.setTimeout(60000, () => { request.destroy(); reject(new Error('Timeout')); });
+    request.setTimeout(120000, () => { request.destroy(); reject(new Error('Timeout')); });
   });
 }
 
@@ -194,12 +202,12 @@ function getAudioDuration(filePath) {
 }
 
 function getFfmpegVersion() {
-  try { return execSync('ffmpeg -version 2>&1 | head -1').toString().trim(); } 
+  try { return execSync('ffmpeg -version 2>&1 | head -1').toString().trim(); }
   catch(e) { return 'not found'; }
 }
 
 app.listen(PORT, () => {
-  console.log(`🎬 FacelessAI Render Server v2.0 rodando na porta ${PORT}`);
+  console.log(`🎬 FacelessAI Render Server v3.0 na porta ${PORT}`);
   console.log(`FFmpeg: ${getFfmpegVersion()}`);
   console.log(`Supabase: ${SUPABASE_URL ? 'configurado' : 'NÃO configurado'}`);
 });
