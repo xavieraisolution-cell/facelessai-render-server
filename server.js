@@ -42,7 +42,7 @@ function getJob(job_id) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', service: 'FacelessAI Render Server v3.1', ffmpeg: getFfmpegVersion() });
+  res.json({ status: 'ok', service: 'FacelessAI Render Server v3.3', ffmpeg: getFfmpegVersion() });
 });
 
 app.get('/health', (req, res) => {
@@ -262,7 +262,7 @@ function getFfmpegVersion() {
 }
 
 app.listen(PORT, () => {
-  console.log(`🎬 FacelessAI Render Server v3.1 na porta ${PORT}`);
+  console.log(`🎬 FacelessAI Render Server v3.3 na porta ${PORT}`);
   console.log(`FFmpeg: ${getFfmpegVersion()}`);
   console.log(`Supabase: ${SUPABASE_URL ? 'configurado' : 'NÃO configurado'}`);
 });
