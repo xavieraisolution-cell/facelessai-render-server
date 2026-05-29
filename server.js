@@ -106,15 +106,15 @@ async function renderVideo({ audio_url, clips, language, job_id }) {
     const outputPath = path.join(workDir, 'output.mp4');
     console.log(`[${job_id}] Renderizando...`);
     execSync(
-      `ffmpeg -y -i "${rawVideoPath}" -i "${audioPath}" ` +
-      `-map 0:v:0 -map 1:a:0 ` +
-      `-c:v libx264 -preset ultrafast -crf 28 ` +
-      `-c:a aac -b:a 128k ` +
-      `-t ${Math.min(audioDuration, 600)} ` +
-      `-vf "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1" ` +
-      `-movflags +faststart "${outputPath}"`,
-      { timeout: 600000 }
-    );
+  `ffmpeg -y -i "${rawVideoPath}" -i "${audioPath}" ` +
+  `-map 0:v:0 -map 1:a:0 ` +
+  `-c:v libx264 -preset ultrafast -crf 32 ` +
+  `-c:a aac -b:a 96k ` +
+  `-t ${Math.min(audioDuration, 600)} ` +
+  `-vf "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1" ` +
+  `-movflags +faststart "${outputPath}"`,
+  { timeout: 600000 }
+);
 
     const videoSize = fs.statSync(outputPath).size;
     console.log(`[${job_id}] Vídeo: ${videoSize} bytes`);
@@ -122,12 +122,12 @@ async function renderVideo({ audio_url, clips, language, job_id }) {
     // Upload to Supabase
     const videoBuffer = fs.readFileSync(outputPath);
     const videoFileName = `${job_id}.mp4`;
-    const uploadUrl = `${SUPABASE_URL}/storage/v1/object/facelessai-videos/${videoFileName}`;
+    const uploadUrl = `${SUPABASE_URL}/storage/v1/object/facelessai-video/${videoFileName}`;
     
     console.log(`[${job_id}] Upload Supabase...`);
     await uploadToSupabase(uploadUrl, videoBuffer, SUPABASE_KEY);
 
-    const videoUrl = `${SUPABASE_URL}/storage/v1/object/public/facelessai-videos/${videoFileName}`;
+   const videoUrl = `${SUPABASE_URL}/storage/v1/object/public/facelessai-video/${videoFileName}`;
     console.log(`[${job_id}] Concluído: ${videoUrl}`);
 
     jobs[job_id] = {
