@@ -69,7 +69,7 @@ function ffmpeg(args, timeout = 300000) {
 }
 
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', service: 'FacelessAI Render Server v3.5', ffmpeg: getFfmpegVersion() });
+  res.json({ status: 'ok', service: 'FacelessAI Render Server v3.6', ffmpeg: getFfmpegVersion() });
 });
 
 app.get('/health', (req, res) => {
@@ -110,12 +110,15 @@ async function renderVideo({ audio_url, clips, language, job_id }) {
 
     // Download audio
     const audioPath = path.join(workDir, 'audio.mpga');
+    const audioMp3Path = path.join(workDir, 'audio.mp3');
     console.log(`[${job_id}] Baixando áudio...`);
     await downloadFile(audio_url, audioPath);
     console.log(`[${job_id}] Áudio: ${fs.statSync(audioPath).size} bytes`);
 
-    const audioDuration = getAudioDuration(audioPath);
-    console.log(`[${job_id}] Duração: ${audioDuration}s`);
+    // Converte para mp3 para leitura correta de duração
+    ffmpeg(['-y', '-i', audioPath, '-c:a', 'libmp3lame', '-q:a', '2', audioMp3Path], 120000);
+    const audioDuration = getAudioDuration(audioMp3Path);
+    console.log(`[${job_id}] Duração real: ${audioDuration}s`);
 
     // Download clips
     const clipPaths = [];
@@ -160,7 +163,7 @@ async function renderVideo({ audio_url, clips, language, job_id }) {
     const outputPath = path.join(workDir, 'output.mp4');
     console.log(`[${job_id}] Renderizando...`);
     ffmpeg([
-      '-y', '-i', rawVideoPath, '-i', audioPath,
+      '-y', '-i', rawVideoPath, '-i', audioMp3Path,
       '-map', '0:v:0', '-map', '1:a:0',
       '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '35',
       '-c:a', 'aac', '-b:a', '96k',
@@ -272,7 +275,7 @@ function getFfmpegVersion() {
 }
 
 app.listen(PORT, () => {
-  console.log(`🎬 FacelessAI Render Server v3.5 na porta ${PORT}`);
+  console.log(`🎬 FacelessAI Render Server v3.6 na porta ${PORT}`);
   console.log(`FFmpeg: ${getFfmpegVersion()}`);
   console.log(`Supabase: ${SUPABASE_URL ? 'configurado' : 'NÃO configurado'}`);
 });
