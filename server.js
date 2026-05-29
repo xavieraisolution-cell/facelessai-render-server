@@ -13,8 +13,14 @@ const PORT = process.env.PORT || 3000;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+const { createClient } = require('@supabase/supabase-js');
+const ws = require('ws');
 
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
+  global: {
+    WebSocket: ws
+  }
+});
 // Health check
 app.get('/', (req, res) => {
   res.json({ 
