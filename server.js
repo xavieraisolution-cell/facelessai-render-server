@@ -96,14 +96,16 @@ async function renderVideo({ audio_url, clips, language, job_id }) {
     const audioDuration = getAudioDuration(audioPath);
     console.log(`[${job_id}] Duração: ${audioDuration}s`);
 
-    // Download clips
+    // Download clips — baixa todos os clips disponíveis (até 20)
     const clipPaths = [];
-    for (let i = 0; i < Math.min(clips.length, 6); i++) {
+    for (let i = 0; i < Math.min(clips.length, 20); i++) {
       const clipPath = path.join(workDir, `clip_${i}.mp4`);
       try {
         await downloadFile(clips[i].url, clipPath);
-        clipPaths.push({ path: clipPath, duration: clips[i].duration || 10 });
-        console.log(`[${job_id}] Clip ${i+1} OK`);
+        // Verifica duração real do clip
+        const realDur = getAudioDuration(clipPath);
+        clipPaths.push({ path: clipPath, duration: realDur || clips[i].duration || 10 });
+        console.log(`[${job_id}] Clip ${i+1} OK (${realDur}s)`);
       } catch(e) {
         console.error(`[${job_id}] Clip ${i} falhou:`, e.message);
       }
@@ -111,17 +113,24 @@ async function renderVideo({ audio_url, clips, language, job_id }) {
 
     if (clipPaths.length === 0) throw new Error('Nenhum clip baixado');
 
-    // Concat list
+    // Concat list — repete clips de forma embaralhada para cobrir o áudio completo
     const concatListPath = path.join(workDir, 'clips.txt');
     let concatContent = '';
     let totalDuration = 0;
-    let idx = 0;
-    while (totalDuration < audioDuration + 5 && idx < 50) {
-      const clip = clipPaths[idx % clipPaths.length];
-      concatContent += `file '${clip.path}'\n`;
-      totalDuration += clip.duration;
-      idx++;
+    const targetDuration = audioDuration + 10; // margem de 10s
+    let pass = 0;
+    while (totalDuration < targetDuration) {
+      // Embaralha os clips a cada passagem para variar
+      const shuffled = [...clipPaths].sort(() => Math.random() - 0.5);
+      for (const clip of shuffled) {
+        if (totalDuration >= targetDuration) break;
+        concatContent += `file '${clip.path}'\n`;
+        totalDuration += clip.duration;
+      }
+      pass++;
+      if (pass > 10) break; // segurança
     }
+    console.log(`[${job_id}] Total video duration: ${totalDuration}s para audio de ${audioDuration}s`);
     fs.writeFileSync(concatListPath, concatContent);
 
     // Concatenate
@@ -222,9 +231,27 @@ function downloadFile(url, destPath) {
 
 function getAudioDuration(filePath) {
   try {
-    const result = spawnSync('ffprobe', ['-v', 'quiet', '-show_entries', 'format=duration', '-of', 'csv=p=0', filePath], { timeout: 10000, maxBuffer: 1024 * 1024 });
-    return parseFloat(result.stdout.toString().trim()) || 600;
-  } catch(e) { return 600; }
+    // Tenta primeiro com show_entries format
+    const result = spawnSync('ffprobe', [
+      '-v', 'quiet', '-show_entries', 'format=duration',
+      '-of', 'csv=p=0', filePath
+    ], { timeout: 15000, maxBuffer: 1024 * 1024 });
+    const val = parseFloat(result.stdout.toString().trim());
+    if (val && val > 0) return val;
+    
+    // Fallback: tenta com stream duration
+    const result2 = spawnSync('ffprobe', [
+      '-v', 'quiet', '-show_entries', 'stream=duration',
+      '-of', 'csv=p=0', filePath
+    ], { timeout: 15000, maxBuffer: 1024 * 1024 });
+    const val2 = parseFloat(result2.stdout.toString().trim());
+    if (val2 && val2 > 0) return val2;
+    
+    return 300; // fallback 5min
+  } catch(e) { 
+    console.error('getAudioDuration error:', e.message);
+    return 300; 
+  }
 }
 
 function getFfmpegVersion() {
