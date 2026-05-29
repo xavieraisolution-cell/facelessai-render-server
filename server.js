@@ -12,11 +12,26 @@ const PORT = process.env.PORT || 3000;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
 
-// In-memory job status store
-const jobs = {};
+// ── Job persistence (arquivo em vez de memória RAM) ──────────────────────────
+const JOBS_DIR = '/tmp/facelessai_jobs';
+if (!fs.existsSync(JOBS_DIR)) fs.mkdirSync(JOBS_DIR, { recursive: true });
+
+function saveJob(job_id, data) {
+  try { fs.writeFileSync(path.join(JOBS_DIR, `${job_id}.json`), JSON.stringify(data)); }
+  catch(e) { console.error('saveJob error:', e.message); }
+}
+
+function getJob(job_id) {
+  try {
+    const file = path.join(JOBS_DIR, `${job_id}.json`);
+    if (!fs.existsSync(file)) return null;
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch(e) { return null; }
+}
+// ─────────────────────────────────────────────────────────────────────────────
 
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', service: 'FacelessAI Render Server v3.0', ffmpeg: getFfmpegVersion() });
+  res.json({ status: 'ok', service: 'FacelessAI Render Server v3.1', ffmpeg: getFfmpegVersion() });
 });
 
 app.get('/health', (req, res) => {
@@ -25,7 +40,7 @@ app.get('/health', (req, res) => {
 
 // Check job status
 app.get('/status/:job_id', (req, res) => {
-  const job = jobs[req.params.job_id];
+  const job = getJob(req.params.job_id);
   if (!job) return res.status(404).json({ error: 'Job not found' });
   res.json(job);
 });
@@ -42,13 +57,14 @@ app.post('/render', (req, res) => {
   }
 
   // Respond immediately
-  jobs[job_id] = { status: 'processing', job_id, started_at: new Date().toISOString() };
+  const initialJob = { status: 'processing', job_id, started_at: new Date().toISOString() };
+  saveJob(job_id, initialJob);
   res.json({ success: true, job_id, status: 'processing', message: 'Render started' });
 
   // Process in background
   renderVideo({ audio_url, clips, language, job_id }).catch(err => {
     console.error(`[${job_id}] Fatal error:`, err.message);
-    jobs[job_id] = { status: 'error', job_id, error: err.message };
+    saveJob(job_id, { status: 'error', job_id, error: err.message });
   });
 });
 
@@ -106,15 +122,15 @@ async function renderVideo({ audio_url, clips, language, job_id }) {
     const outputPath = path.join(workDir, 'output.mp4');
     console.log(`[${job_id}] Renderizando...`);
     execSync(
-  `ffmpeg -y -i "${rawVideoPath}" -i "${audioPath}" ` +
-  `-map 0:v:0 -map 1:a:0 ` +
- `-c:v libx264 -preset ultrafast -crf 35 ` +
-`-c:a aac -b:a 96k ` +
-`-t ${Math.min(audioDuration, 600)} ` +
-`-vf "scale=854:480:force_original_aspect_ratio=decrease,pad=854:480:(ow-iw)/2:(oh-ih)/2,setsar=1" ` +
-  `-movflags +faststart "${outputPath}"`,
-  { timeout: 600000 }
-);
+      `ffmpeg -y -i "${rawVideoPath}" -i "${audioPath}" ` +
+      `-map 0:v:0 -map 1:a:0 ` +
+      `-c:v libx264 -preset ultrafast -crf 35 ` +
+      `-c:a aac -b:a 96k ` +
+      `-t ${Math.min(audioDuration, 600)} ` +
+      `-vf "scale=854:480:force_original_aspect_ratio=decrease,pad=854:480:(ow-iw)/2:(oh-ih)/2,setsar=1" ` +
+      `-movflags +faststart "${outputPath}"`,
+      { timeout: 600000 }
+    );
 
     const videoSize = fs.statSync(outputPath).size;
     console.log(`[${job_id}] Vídeo: ${videoSize} bytes`);
@@ -127,23 +143,23 @@ async function renderVideo({ audio_url, clips, language, job_id }) {
     console.log(`[${job_id}] Upload Supabase...`);
     await uploadToSupabase(uploadUrl, videoBuffer, SUPABASE_KEY);
 
-   const videoUrl = `${SUPABASE_URL}/storage/v1/object/public/facelessai-video/${videoFileName}`;
+    const videoUrl = `${SUPABASE_URL}/storage/v1/object/public/facelessai-video/${videoFileName}`;
     console.log(`[${job_id}] Concluído: ${videoUrl}`);
 
-    jobs[job_id] = {
+    saveJob(job_id, {
       status: 'completed',
       job_id,
       video_url: videoUrl,
       duration: audioDuration,
       size: videoSize,
       completed_at: new Date().toISOString()
-    };
+    });
 
     fs.rmSync(workDir, { recursive: true, force: true });
 
   } catch(error) {
     console.error(`[${job_id}] Erro:`, error.message);
-    jobs[job_id] = { status: 'error', job_id, error: error.message };
+    saveJob(job_id, { status: 'error', job_id, error: error.message });
     try { fs.rmSync(workDir, { recursive: true, force: true }); } catch(e) {}
   }
 }
@@ -207,7 +223,7 @@ function getFfmpegVersion() {
 }
 
 app.listen(PORT, () => {
-  console.log(`🎬 FacelessAI Render Server v3.0 na porta ${PORT}`);
+  console.log(`🎬 FacelessAI Render Server v3.1 na porta ${PORT}`);
   console.log(`FFmpeg: ${getFfmpegVersion()}`);
   console.log(`Supabase: ${SUPABASE_URL ? 'configurado' : 'NÃO configurado'}`);
 });
