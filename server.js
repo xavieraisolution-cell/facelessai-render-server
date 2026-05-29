@@ -1,5 +1,16 @@
 const express = require('express');
-const { execSync } = require('child_process');
+const { execSync, spawnSync } = require('child_process');
+
+function ffmpeg(args, timeout = 300000) {
+  const result = spawnSync('ffmpeg', args, {
+    stdio: ['ignore', 'ignore', 'pipe'],
+    timeout,
+    maxBuffer: 100 * 1024 * 1024
+  });
+  if (result.status !== 0) {
+    throw new Error(`FFmpeg failed: ${(result.stderr || '').toString().slice(-500)}`);
+  }
+}
 const https = require('https');
 const http = require('http');
 const fs = require('fs');
@@ -116,21 +127,20 @@ async function renderVideo({ audio_url, clips, language, job_id }) {
     // Concatenate
     const rawVideoPath = path.join(workDir, 'raw.mp4');
     console.log(`[${job_id}] Concatenando...`);
-    execSync(`ffmpeg -y -f concat -safe 0 -i "${concatListPath}" -c copy "${rawVideoPath}"`, { timeout: 120000 });
+    ffmpeg(['-y', '-f', 'concat', '-safe', '0', '-i', concatListPath, '-c', 'copy', rawVideoPath], 120000);
 
     // Merge
     const outputPath = path.join(workDir, 'output.mp4');
     console.log(`[${job_id}] Renderizando...`);
-    execSync(
-      `ffmpeg -y -i "${rawVideoPath}" -i "${audioPath}" ` +
-      `-map 0:v:0 -map 1:a:0 ` +
-      `-c:v libx264 -preset ultrafast -crf 35 ` +
-      `-c:a aac -b:a 96k ` +
-      `-t ${Math.min(audioDuration, 600)} ` +
-      `-vf "scale=854:480:force_original_aspect_ratio=decrease,pad=854:480:(ow-iw)/2:(oh-ih)/2,setsar=1" ` +
-      `-movflags +faststart "${outputPath}"`,
-      { timeout: 600000 }
-    );
+    ffmpeg([
+      '-y', '-i', rawVideoPath, '-i', audioPath,
+      '-map', '0:v:0', '-map', '1:a:0',
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '35',
+      '-c:a', 'aac', '-b:a', '96k',
+      '-t', String(Math.min(audioDuration, 600)),
+      '-vf', 'scale=854:480:force_original_aspect_ratio=decrease,pad=854:480:(ow-iw)/2:(oh-ih)/2,setsar=1',
+      '-movflags', '+faststart', outputPath
+    ], 600000);
 
     const videoSize = fs.statSync(outputPath).size;
     console.log(`[${job_id}] Vídeo: ${videoSize} bytes`);
@@ -212,14 +222,16 @@ function downloadFile(url, destPath) {
 
 function getAudioDuration(filePath) {
   try {
-    const output = execSync(`ffprobe -v quiet -show_entries format=duration -of csv=p=0 "${filePath}"`, { timeout: 10000 }).toString().trim();
-    return parseFloat(output) || 600;
+    const result = spawnSync('ffprobe', ['-v', 'quiet', '-show_entries', 'format=duration', '-of', 'csv=p=0', filePath], { timeout: 10000, maxBuffer: 1024 * 1024 });
+    return parseFloat(result.stdout.toString().trim()) || 600;
   } catch(e) { return 600; }
 }
 
 function getFfmpegVersion() {
-  try { return execSync('ffmpeg -version 2>&1 | head -1').toString().trim(); }
-  catch(e) { return 'not found'; }
+  try {
+    const result = spawnSync('ffmpeg', ['-version'], { timeout: 5000, maxBuffer: 1024 * 1024 });
+    return result.stdout.toString().split('\n')[0].trim();
+  } catch(e) { return 'not found'; }
 }
 
 app.listen(PORT, () => {
