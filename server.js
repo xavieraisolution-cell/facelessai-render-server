@@ -108,10 +108,10 @@ async function renderVideo({ audio_url, clips, language, job_id }) {
     execSync(
   `ffmpeg -y -i "${rawVideoPath}" -i "${audioPath}" ` +
   `-map 0:v:0 -map 1:a:0 ` +
-  `-c:v libx264 -preset ultrafast -crf 32 ` +
-  `-c:a aac -b:a 96k ` +
-  `-t ${Math.min(audioDuration, 600)} ` +
-  `-vf "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1" ` +
+ `-c:v libx264 -preset ultrafast -crf 35 ` +
+`-c:a aac -b:a 96k ` +
+`-t ${Math.min(audioDuration, 600)} ` +
+`-vf "scale=854:480:force_original_aspect_ratio=decrease,pad=854:480:(ow-iw)/2:(oh-ih)/2,setsar=1" ` +
   `-movflags +faststart "${outputPath}"`,
   { timeout: 600000 }
 );
