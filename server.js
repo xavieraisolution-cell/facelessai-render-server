@@ -76,7 +76,7 @@ function ffmpeg(args, timeout = 300000) {
 }
 
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', service: 'FacelessAI Render Server v4.1', ffmpeg: getFfmpegVersion() });
+  res.json({ status: 'ok', service: 'FacelessAI Render Server v4.2', ffmpeg: getFfmpegVersion() });
 
 });
 
@@ -173,7 +173,7 @@ async function renderVideo({ audio_url, clips, language, job_id }) {
     // Merge audio + video
     const outputPath = path.join(workDir, 'output.mp4');
     console.log(`[${job_id}] Renderizando...`);
-    ffmpeg([
+    await ffmpeg([
       '-y', '-i', rawVideoPath, '-i', audioMp3Path,
       '-map', '0:v:0', '-map', '1:a:0',
       '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '32',
@@ -296,7 +296,7 @@ function getFfmpegVersion() {
 }
 
 app.listen(PORT, () => {
-  console.log(`🎬 FacelessAI Render Server v4.1 na porta ${PORT}`);
+  console.log(`🎬 FacelessAI Render Server v4.2 na porta ${PORT}`);
   console.log(`FFmpeg: ${getFfmpegVersion()}`);
   console.log(`Supabase: ${SUPABASE_URL ? 'configurado' : 'NÃO configurado'}`);
 });
