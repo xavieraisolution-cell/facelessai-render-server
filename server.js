@@ -69,7 +69,7 @@ function ffmpeg(args, timeout = 300000) {
 }
 
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', service: 'FacelessAI Render Server v3.8', ffmpeg: getFfmpegVersion() });
+  res.json({ status: 'ok', service: 'FacelessAI Render Server v3.9', ffmpeg: getFfmpegVersion() });
 
 });
 
@@ -166,22 +166,21 @@ async function renderVideo({ audio_url, clips, language, job_id }) {
     ffmpeg([
       '-y', '-i', rawVideoPath, '-i', audioMp3Path,
       '-map', '0:v:0', '-map', '1:a:0',
-      '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
-      '-c:a', 'aac', '-b:a', '128k',
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '32',
+      '-c:a', 'aac', '-b:a', '96k',
       '-shortest',
-      '-vf', 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1',
+      '-vf', 'scale=854:480:force_original_aspect_ratio=decrease,pad=854:480:(ow-iw)/2:(oh-ih)/2,setsar=1',
       '-movflags', '+faststart', outputPath
     ], 600000);
 
     const videoSize = fs.statSync(outputPath).size;
     console.log(`[${job_id}] Vídeo: ${videoSize} bytes`);
 
-    // Upload to Supabase Storage
-    const videoBuffer = fs.readFileSync(outputPath);
+    // Upload to Supabase Storage via stream
     const videoFileName = `${job_id}.mp4`;
     const uploadUrl = `${SUPABASE_URL}/storage/v1/object/facelessai-video/${videoFileName}`;
     console.log(`[${job_id}] Upload Supabase...`);
-    await uploadToSupabase(uploadUrl, videoBuffer, SUPABASE_KEY);
+    await uploadToSupabase(uploadUrl, outputPath, SUPABASE_KEY);
 
     const videoUrl = `${SUPABASE_URL}/storage/v1/object/public/facelessai-video/${videoFileName}`;
     console.log(`[${job_id}] Concluído: ${videoUrl}`);
@@ -204,8 +203,9 @@ async function renderVideo({ audio_url, clips, language, job_id }) {
   }
 }
 
-function uploadToSupabase(url, buffer, key) {
+function uploadToSupabase(url, filePath, key) {
   return new Promise((resolve, reject) => {
+    const fileSize = fs.statSync(filePath).size;
     const urlObj = new URL(url);
     const options = {
       hostname: urlObj.hostname,
@@ -214,7 +214,7 @@ function uploadToSupabase(url, buffer, key) {
       headers: {
         'Authorization': `Bearer ${key}`,
         'Content-Type': 'video/mp4',
-        'Content-Length': buffer.length,
+        'Content-Length': fileSize,
         'x-upsert': 'true'
       }
     };
@@ -227,8 +227,10 @@ function uploadToSupabase(url, buffer, key) {
       });
     });
     req.on('error', reject);
-    req.write(buffer);
-    req.end();
+    // Stream the file instead of loading into memory
+    const fileStream = fs.createReadStream(filePath);
+    fileStream.pipe(req);
+    fileStream.on('error', reject);
   });
 }
 
@@ -276,7 +278,7 @@ function getFfmpegVersion() {
 }
 
 app.listen(PORT, () => {
-  console.log(`🎬 FacelessAI Render Server v3.8 na porta ${PORT}`);
+  console.log(`🎬 FacelessAI Render Server v3.9 na porta ${PORT}`);
   console.log(`FFmpeg: ${getFfmpegVersion()}`);
   console.log(`Supabase: ${SUPABASE_URL ? 'configurado' : 'NÃO configurado'}`);
 });
