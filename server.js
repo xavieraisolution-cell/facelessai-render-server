@@ -58,18 +58,25 @@ function supabaseRequest(method, endpoint, body, extraHeaders = {}) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function ffmpeg(args, timeout = 300000) {
-  const result = spawnSync('ffmpeg', args, {
-    stdio: ['ignore', 'ignore', 'pipe'],
-    timeout,
-    maxBuffer: 100 * 1024 * 1024
+  return new Promise((resolve, reject) => {
+    const { spawn } = require('child_process');
+    const proc = spawn('ffmpeg', args, {
+      stdio: ['ignore', 'ignore', 'pipe']
+    });
+    let stderr = '';
+    proc.stderr.on('data', d => { stderr += d.toString(); if (stderr.length > 10000) stderr = stderr.slice(-5000); });
+    const timer = setTimeout(() => { proc.kill(); reject(new Error('FFmpeg timeout')); }, timeout);
+    proc.on('close', code => {
+      clearTimeout(timer);
+      if (code === 0) resolve();
+      else reject(new Error(`FFmpeg failed (${code}): ${stderr.slice(-300)}`));
+    });
+    proc.on('error', err => { clearTimeout(timer); reject(err); });
   });
-  if (result.status !== 0) {
-    throw new Error(`FFmpeg failed: ${(result.stderr || '').toString().slice(-500)}`);
-  }
 }
 
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', service: 'FacelessAI Render Server v3.9', ffmpeg: getFfmpegVersion() });
+  res.json({ status: 'ok', service: 'FacelessAI Render Server v4.0', ffmpeg: getFfmpegVersion() });
 
 });
 
@@ -278,7 +285,7 @@ function getFfmpegVersion() {
 }
 
 app.listen(PORT, () => {
-  console.log(`🎬 FacelessAI Render Server v3.9 na porta ${PORT}`);
+  console.log(`🎬 FacelessAI Render Server v4.0 na porta ${PORT}`);
   console.log(`FFmpeg: ${getFfmpegVersion()}`);
   console.log(`Supabase: ${SUPABASE_URL ? 'configurado' : 'NÃO configurado'}`);
 });
