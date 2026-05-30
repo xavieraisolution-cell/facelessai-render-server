@@ -76,7 +76,7 @@ function ffmpeg(args, timeout = 300000) {
 }
 
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', service: 'FacelessAI Render Server v4.3', ffmpeg: getFfmpegVersion() });
+  res.json({ status: 'ok', service: 'FacelessAI Render Server v4.4', ffmpeg: getFfmpegVersion() });
 
 });
 
@@ -128,8 +128,19 @@ async function renderVideo({ audio_url, clips, language, job_id }) {
     if (!fs.existsSync(audioMp3Path) || fs.statSync(audioMp3Path).size === 0) {
       throw new Error('Conversão mp3 falhou');
     }
-    const audioDuration = getAudioDuration(audioMp3Path);
-    console.log(`[${job_id}] Duração real: ${audioDuration}s`);
+    
+    // Lê duração do mp3 gerado
+    let audioDuration = getAudioDuration(audioMp3Path);
+    
+    // Se duração parecer errada, estima pelo tamanho do mpga original
+    // OpenAI TTS gera ~32kbps = 4000 bytes/s
+    if (audioDuration < 60 || audioDuration > 3600) {
+      const mpgaSize = fs.statSync(audioPath).size;
+      audioDuration = mpgaSize / 4000;
+      console.log(`[${job_id}] Duração estimada pelo mpga: ${audioDuration}s (${mpgaSize} bytes)`);
+    } else {
+      console.log(`[${job_id}] Duração real: ${audioDuration}s`);
+    }
 
     // Download clips — até 15 clips com 2GB RAM
     const clipPaths = [];
@@ -179,8 +190,8 @@ async function renderVideo({ audio_url, clips, language, job_id }) {
     await ffmpeg([
       '-y', '-i', rawVideoPath, '-i', audioMp3Path,
       '-map', '0:v:0', '-map', '1:a:0',
-      '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '32',
-      '-c:a', 'aac', '-b:a', '96k',
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '38',
+      '-c:a', 'aac', '-b:a', '64k',
       '-shortest',
       '-vf', 'scale=854:480:force_original_aspect_ratio=decrease,pad=854:480:(ow-iw)/2:(oh-ih)/2,setsar=1',
       '-movflags', '+faststart', outputPath
@@ -299,7 +310,7 @@ function getFfmpegVersion() {
 }
 
 app.listen(PORT, () => {
-  console.log(`🎬 FacelessAI Render Server v4.3 na porta ${PORT}`);
+  console.log(`🎬 FacelessAI Render Server v4.4 na porta ${PORT}`);
   console.log(`FFmpeg: ${getFfmpegVersion()}`);
   console.log(`Supabase: ${SUPABASE_URL ? 'configurado' : 'NÃO configurado'}`);
 });
