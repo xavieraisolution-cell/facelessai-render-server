@@ -76,7 +76,7 @@ function ffmpeg(args, timeout = 300000) {
 }
 
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', service: 'FacelessAI Render Server v4.0', ffmpeg: getFfmpegVersion() });
+  res.json({ status: 'ok', service: 'FacelessAI Render Server v4.1', ffmpeg: getFfmpegVersion() });
 
 });
 
@@ -165,7 +165,10 @@ async function renderVideo({ audio_url, clips, language, job_id }) {
     // Concatenate
     const rawVideoPath = path.join(workDir, 'raw.mp4');
     console.log(`[${job_id}] Concatenando...`);
-    ffmpeg(['-y', '-f', 'concat', '-safe', '0', '-i', concatListPath, '-c', 'copy', rawVideoPath], 120000);
+    await ffmpeg(['-y', '-f', 'concat', '-safe', '0', '-i', concatListPath, '-c', 'copy', rawVideoPath], 120000);
+    
+    if (!fs.existsSync(rawVideoPath)) throw new Error('Concatenação falhou - raw.mp4 não criado');
+    console.log(`[${job_id}] raw.mp4: ${fs.statSync(rawVideoPath).size} bytes`);
 
     // Merge audio + video
     const outputPath = path.join(workDir, 'output.mp4');
@@ -261,20 +264,28 @@ function downloadFile(url, destPath) {
 
 function getAudioDuration(filePath) {
   try {
-    const result = spawnSync('ffprobe', [
-      '-v', 'quiet', '-show_entries', 'format=duration',
-      '-of', 'csv=p=0', filePath
-    ], { timeout: 15000, maxBuffer: 1024 * 1024 });
-    const val = parseFloat(result.stdout.toString().trim());
-    if (val && val > 0) return val;
-    const result2 = spawnSync('ffprobe', [
-      '-v', 'quiet', '-show_entries', 'stream=duration',
-      '-of', 'csv=p=0', filePath
-    ], { timeout: 15000, maxBuffer: 1024 * 1024 });
-    const val2 = parseFloat(result2.stdout.toString().trim());
-    if (val2 && val2 > 0) return val2;
-    return 300;
-  } catch(e) { return 300; }
+    const { spawnSync } = require('child_process');
+    // Tenta format duration
+    const r1 = spawnSync('ffprobe', ['-v', 'quiet', '-show_entries', 'format=duration', '-of', 'csv=p=0', filePath], { timeout: 15000, maxBuffer: 1024 * 1024 });
+    const v1 = parseFloat(r1.stdout.toString().trim());
+    if (v1 && v1 > 0 && v1 < 3600) return v1;
+    
+    // Tenta stream duration
+    const r2 = spawnSync('ffprobe', ['-v', 'quiet', '-show_entries', 'stream=duration', '-of', 'csv=p=0', filePath], { timeout: 15000, maxBuffer: 1024 * 1024 });
+    const v2 = parseFloat(r2.stdout.toString().trim());
+    if (v2 && v2 > 0 && v2 < 3600) return v2;
+
+    // Estima pelo tamanho do arquivo (mp3 ~128kbps = 16KB/s, mpga ~128kbps)
+    const fileSize = fs.statSync(filePath).size;
+    const estimated = fileSize / 16000; // bytes / (128kbps / 8)
+    console.log(`[duration] estimado pelo tamanho: ${estimated}s (${fileSize} bytes)`);
+    if (estimated > 0 && estimated < 3600) return estimated;
+    
+    return 420; // fallback 7min
+  } catch(e) { 
+    console.error('getAudioDuration error:', e.message);
+    return 420; 
+  }
 }
 
 function getFfmpegVersion() {
@@ -285,7 +296,7 @@ function getFfmpegVersion() {
 }
 
 app.listen(PORT, () => {
-  console.log(`🎬 FacelessAI Render Server v4.0 na porta ${PORT}`);
+  console.log(`🎬 FacelessAI Render Server v4.1 na porta ${PORT}`);
   console.log(`FFmpeg: ${getFfmpegVersion()}`);
   console.log(`Supabase: ${SUPABASE_URL ? 'configurado' : 'NÃO configurado'}`);
 });
