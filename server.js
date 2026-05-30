@@ -76,7 +76,7 @@ function ffmpeg(args, timeout = 300000) {
 }
 
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', service: 'FacelessAI Render Server v4.2', ffmpeg: getFfmpegVersion() });
+  res.json({ status: 'ok', service: 'FacelessAI Render Server v4.3', ffmpeg: getFfmpegVersion() });
 
 });
 
@@ -124,7 +124,10 @@ async function renderVideo({ audio_url, clips, language, job_id }) {
     console.log(`[${job_id}] Áudio: ${fs.statSync(audioPath).size} bytes`);
 
     // Converte para mp3 para leitura correta de duração
-    ffmpeg(['-y', '-i', audioPath, '-c:a', 'libmp3lame', '-q:a', '2', audioMp3Path], 120000);
+    await ffmpeg(['-y', '-i', audioPath, '-c:a', 'libmp3lame', '-q:a', '2', audioMp3Path], 120000);
+    if (!fs.existsSync(audioMp3Path) || fs.statSync(audioMp3Path).size === 0) {
+      throw new Error('Conversão mp3 falhou');
+    }
     const audioDuration = getAudioDuration(audioMp3Path);
     console.log(`[${job_id}] Duração real: ${audioDuration}s`);
 
@@ -165,7 +168,7 @@ async function renderVideo({ audio_url, clips, language, job_id }) {
     // Concatenate
     const rawVideoPath = path.join(workDir, 'raw.mp4');
     console.log(`[${job_id}] Concatenando...`);
-    await ffmpeg(['-y', '-f', 'concat', '-safe', '0', '-i', concatListPath, '-c', 'copy', rawVideoPath], 120000);
+    await ffmpeg(['-y', '-f', 'concat', '-safe', '0', '-i', concatListPath, '-c', 'copy', rawVideoPath], 300000);
     
     if (!fs.existsSync(rawVideoPath)) throw new Error('Concatenação falhou - raw.mp4 não criado');
     console.log(`[${job_id}] raw.mp4: ${fs.statSync(rawVideoPath).size} bytes`);
@@ -296,7 +299,7 @@ function getFfmpegVersion() {
 }
 
 app.listen(PORT, () => {
-  console.log(`🎬 FacelessAI Render Server v4.2 na porta ${PORT}`);
+  console.log(`🎬 FacelessAI Render Server v4.3 na porta ${PORT}`);
   console.log(`FFmpeg: ${getFfmpegVersion()}`);
   console.log(`Supabase: ${SUPABASE_URL ? 'configurado' : 'NÃO configurado'}`);
 });
