@@ -11,7 +11,6 @@ app.use(express.json({ limit: '50mb' }));
 const AUTH_KEY = process.env.AUTH_KEY || 'facelessai2026xaviersecretkey32x';
 const jobs = {};
 
-// ─── Auth Middleware ───────────────────────────────────────────────────────────
 function authMiddleware(req, res, next) {
   const auth = req.headers['authorization'] || '';
   if (auth !== `Bearer ${AUTH_KEY}`) {
@@ -20,7 +19,6 @@ function authMiddleware(req, res, next) {
   next();
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
 function downloadFile(url, dest) {
   return new Promise((resolve, reject) => {
     const file = fs.createWriteStream(dest);
@@ -52,10 +50,8 @@ function httpsPost(options, postData) {
   });
 }
 
-// ─── Split text into chunks of max N chars, breaking at sentence boundaries ───
 function splitIntoChunks(text, maxChars = 4000) {
   const chunks = [];
-  // Split at sentence boundaries (. ! ?)
   const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
   let current = '';
 
@@ -69,7 +65,6 @@ function splitIntoChunks(text, maxChars = 4000) {
   }
   if (current.trim()) chunks.push(current.trim());
 
-  // Safety: if a single sentence > maxChars, split by word
   const finalChunks = [];
   for (const chunk of chunks) {
     if (chunk.length <= maxChars) {
@@ -92,7 +87,6 @@ function splitIntoChunks(text, maxChars = 4000) {
   return finalChunks;
 }
 
-// ─── Generate TTS audio for a single chunk via OpenAI ─────────────────────────
 async function generateTTSChunk(text, voice, model, apiKey, outputPath) {
   const body = JSON.stringify({ model, input: text, voice, response_format: 'mp3' });
 
@@ -114,7 +108,6 @@ async function generateTTSChunk(text, voice, model, apiKey, outputPath) {
   fs.writeFileSync(outputPath, result.body);
 }
 
-// ─── Main render job ──────────────────────────────────────────────────────────
 async function processJob(jobId, data) {
   const jobDir = `/tmp/${jobId}`;
   fs.mkdirSync(jobDir, { recursive: true });
@@ -129,13 +122,11 @@ async function processJob(jobId, data) {
       openai_api_key,
       tts_voice = 'alloy',
       tts_model = 'tts-1',
-      // Legacy: single audio_url support
       audio_url,
     } = data;
 
     let finalAudioPath = path.join(jobDir, 'final_audio.mp3');
 
-    // ── TTS: full script in chunks ───────────────────────────────────────────
     if (script && openai_api_key) {
       jobs[jobId].progress = 'Gerando áudio TTS...';
       const chunks = splitIntoChunks(script, 4000);
@@ -153,7 +144,6 @@ async function processJob(jobId, data) {
       if (chunkPaths.length === 1) {
         fs.copyFileSync(chunkPaths[0], finalAudioPath);
       } else {
-        // Concatenate via FFmpeg
         jobs[jobId].progress = 'Concatenando áudios...';
         const listFile = path.join(jobDir, 'chunks.txt');
         const listContent = chunkPaths.map(p => `file '${p}'`).join('\n');
@@ -162,14 +152,12 @@ async function processJob(jobId, data) {
         console.log(`[${jobId}] Áudios concatenados`);
       }
     } else if (audio_url) {
-      // Legacy: download pre-generated audio
       jobs[jobId].progress = 'Baixando áudio...';
       await downloadFile(audio_url, finalAudioPath);
     } else {
       throw new Error('Nenhum script ou audio_url fornecido');
     }
 
-    // ── Get audio duration ───────────────────────────────────────────────────
     jobs[jobId].progress = 'Calculando duração do áudio...';
     let audioDuration;
     try {
@@ -179,7 +167,6 @@ async function processJob(jobId, data) {
       audioDuration = parseFloat(durationOutput);
       if (isNaN(audioDuration) || audioDuration <= 0) throw new Error('Duração inválida');
     } catch (e) {
-      // Fallback: decode and measure
       const wavPath = path.join(jobDir, 'audio_check.wav');
       execSync(`ffmpeg -y -i "${finalAudioPath}" "${wavPath}"`);
       const durationOutput = execSync(
@@ -190,7 +177,6 @@ async function processJob(jobId, data) {
     }
     console.log(`[${jobId}] Duração do áudio: ${audioDuration}s`);
 
-    // ── Download video clips ─────────────────────────────────────────────────
     jobs[jobId].progress = 'Baixando clips de vídeo...';
     const clipPaths = [];
     const clips = Array.isArray(video_clips) ? video_clips : [];
@@ -208,10 +194,8 @@ async function processJob(jobId, data) {
 
     if (clipPaths.length === 0) throw new Error('Nenhum clip de vídeo disponível');
 
-    // ── Build looping video to match audio duration ──────────────────────────
     jobs[jobId].progress = 'Montando vídeo...';
 
-    // Normalize clips to 1080x1920 (vertical), 30fps, no audio
     const normalizedPaths = [];
     for (let i = 0; i < clipPaths.length; i++) {
       const normPath = path.join(jobDir, `norm_${i}.mp4`);
@@ -221,7 +205,6 @@ async function processJob(jobId, data) {
       normalizedPaths.push(normPath);
     }
 
-    // Loop clips until we cover audioDuration
     const loopListFile = path.join(jobDir, 'loop_list.txt');
     let totalDuration = 0;
     const loopEntries = [];
@@ -229,7 +212,6 @@ async function processJob(jobId, data) {
     while (totalDuration < audioDuration) {
       for (const np of normalizedPaths) {
         if (totalDuration >= audioDuration) break;
-        // Get clip duration
         let clipDur = 10;
         try {
           const cd = execSync(
@@ -249,7 +231,6 @@ async function processJob(jobId, data) {
       `ffmpeg -y -f concat -safe 0 -i "${loopListFile}" -t ${audioDuration} -c:v libx264 -preset fast -crf 23 "${loopedVideoPath}"`
     );
 
-    // ── Merge video + audio ──────────────────────────────────────────────────
     jobs[jobId].progress = 'Mesclando vídeo e áudio...';
     const outputPath = path.join(jobDir, 'output.mp4');
     execSync(
@@ -258,11 +239,9 @@ async function processJob(jobId, data) {
 
     console.log(`[${jobId}] Vídeo final gerado: ${outputPath}`);
 
-    // ── Upload to Supabase ───────────────────────────────────────────────────
     if (data.supabase_url && data.supabase_key) {
       jobs[jobId].progress = 'Enviando para Supabase...';
       const videoBuffer = fs.readFileSync(outputPath);
-      const uploadUrl = `${data.supabase_url}/storage/v1/object/facelessai-videos/${jobId}.mp4`;
 
       const uploadOptions = {
         hostname: new URL(data.supabase_url).hostname,
@@ -286,7 +265,6 @@ async function processJob(jobId, data) {
       jobs[jobId].video_url = publicUrl;
       console.log(`[${jobId}] Upload concluído: ${publicUrl}`);
     } else {
-      // Return base64 if no Supabase configured
       const videoBuffer = fs.readFileSync(outputPath);
       jobs[jobId].status = 'completed';
       jobs[jobId].progress = 'Concluído';
@@ -298,24 +276,19 @@ async function processJob(jobId, data) {
     jobs[jobId].status = 'failed';
     jobs[jobId].error = error.message;
   } finally {
-    // Cleanup temp files
     try { execSync(`rm -rf "${jobDir}"`); } catch {}
   }
 }
 
-// ─── Routes ───────────────────────────────────────────────────────────────────
-
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', version: '5.0', jobs_in_memory: Object.keys(jobs).length });
+  res.json({ status: 'ok', version: '5.1', jobs_in_memory: Object.keys(jobs).length });
 });
 
 app.post('/render', authMiddleware, async (req, res) => {
-  const jobId = `job_${Date.now()}`;
+  // ✅ CORREÇÃO: usa job_id do n8n se fornecido
+  const jobId = req.body.job_id || `job_${Date.now()}`;
   jobs[jobId] = { status: 'queued', progress: 'Na fila...', created_at: new Date().toISOString() };
-
-  // Start async
   processJob(jobId, req.body).catch(console.error);
-
   res.json({ job_id: jobId, status: 'queued' });
 });
 
@@ -329,9 +302,8 @@ app.get('/jobs', authMiddleware, (req, res) => {
   res.json(jobs);
 });
 
-// ─── Start ────────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`FacelessAI Render Server v5.0 rodando na porta ${PORT}`);
+  console.log(`FacelessAI Render Server v5.1 rodando na porta ${PORT}`);
   console.log(`TTS em chunks: SIM | FFmpeg: ${execSync('ffmpeg -version').toString().split('\n')[0]}`);
 });
