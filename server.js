@@ -58,7 +58,6 @@ function httpsRequest(options, body) {
   });
 }
 
-// AWS Signature V4 for R2
 function signR2Request(method, key, contentType, bodyBuffer) {
   const now = new Date();
   const date = now.toISOString().replace(/[:-]|\.\d{3}/g, '').slice(0, 8);
@@ -68,40 +67,18 @@ function signR2Request(method, key, contentType, bodyBuffer) {
   const host = `${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`;
 
   const payloadHash = crypto.createHash('sha256').update(bodyBuffer).digest('hex');
-
   const canonicalHeaders = `content-type:${contentType}\nhost:${host}\nx-amz-content-sha256:${payloadHash}\nx-amz-date:${datetime}\n`;
   const signedHeaders = 'content-type;host;x-amz-content-sha256;x-amz-date';
-
-  const canonicalRequest = [
-    method,
-    `/${R2_BUCKET}/${key}`,
-    '',
-    canonicalHeaders,
-    signedHeaders,
-    payloadHash
-  ].join('\n');
-
+  const canonicalRequest = [method, `/${R2_BUCKET}/${key}`, '', canonicalHeaders, signedHeaders, payloadHash].join('\n');
   const credentialScope = `${date}/${region}/${service}/aws4_request`;
-  const stringToSign = [
-    'AWS4-HMAC-SHA256',
-    datetime,
-    credentialScope,
-    crypto.createHash('sha256').update(canonicalRequest).digest('hex')
-  ].join('\n');
+  const stringToSign = ['AWS4-HMAC-SHA256', datetime, credentialScope, crypto.createHash('sha256').update(canonicalRequest).digest('hex')].join('\n');
 
   const hmac = (key, data) => crypto.createHmac('sha256', key).update(data).digest();
   const signingKey = hmac(hmac(hmac(hmac(`AWS4${R2_SECRET_KEY}`, date), region), service), 'aws4_request');
   const signature = crypto.createHmac('sha256', signingKey).update(stringToSign).digest('hex');
-
   const authorization = `AWS4-HMAC-SHA256 Credential=${R2_ACCESS_KEY}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
 
-  return {
-    host,
-    datetime,
-    payloadHash,
-    authorization,
-    path: `/${R2_BUCKET}/${key}`
-  };
+  return { host, datetime, payloadHash, authorization, path: `/${R2_BUCKET}/${key}` };
 }
 
 async function uploadToR2(filePath, key) {
@@ -125,7 +102,6 @@ async function uploadToR2(filePath, key) {
   if (result.statusCode !== 200) {
     throw new Error(`R2 upload error ${result.statusCode}: ${result.body.toString()}`);
   }
-
   return `${R2_PUBLIC_URL}/${key}`;
 }
 
@@ -191,7 +167,15 @@ async function processJob(jobId, data) {
     jobs[jobId].status = 'processing';
     jobs[jobId].progress = 'Iniciando...';
 
-    const { script, video_clips, openai_api_key, tts_voice = 'alloy', tts_model = 'tts-1', audio_url } = data;
+    const {
+      script, video_clips, openai_api_key,
+      tts_voice = 'alloy', tts_model = 'tts-1',
+      audio_url, video_title = 'Curiosidades Misteriosas'
+    } = data;
+
+    // Salva o título no job para o Workflow 2 usar
+    jobs[jobId].video_title = video_title;
+
     let finalAudioPath = path.join(jobDir, 'final_audio.mp3');
 
     if (script && openai_api_key) {
@@ -239,6 +223,7 @@ async function processJob(jobId, data) {
     }
     console.log(`[${jobId}] Duração do áudio: ${audioDuration}s`);
 
+    // ── Download clips ───────────────────────────────────────────────────────
     jobs[jobId].progress = 'Baixando clips de vídeo...';
     const clipPaths = [];
     const clips = Array.isArray(video_clips) ? video_clips.slice(0, 5) : [];
@@ -254,15 +239,20 @@ async function processJob(jobId, data) {
     }
     if (clipPaths.length === 0) throw new Error('Nenhum clip de vídeo disponível');
 
+    // ── Normalize 1920x1080 horizontal ──────────────────────────────────────
     jobs[jobId].progress = 'Normalizando clips...';
     const normalizedPaths = [];
     for (let i = 0; i < clipPaths.length; i++) {
       const normPath = path.join(jobDir, `norm_${i}.mp4`);
-      execSync(`ffmpeg -y -i "${clipPaths[i]}" -vf "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1" -r 30 -an -c:v libx264 -preset ultrafast -crf 28 "${normPath}"`, { timeout: 120000 });
+      execSync(
+        `ffmpeg -y -i "${clipPaths[i]}" -vf "scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,setsar=1" -r 30 -an -c:v libx264 -preset ultrafast -crf 28 "${normPath}"`,
+        { timeout: 120000 }
+      );
       normalizedPaths.push(normPath);
       console.log(`[${jobId}] Clip ${i + 1} normalizado`);
     }
 
+    // ── Loop clips ───────────────────────────────────────────────────────────
     jobs[jobId].progress = 'Montando vídeo...';
     const loopListFile = path.join(jobDir, 'loop_list.txt');
     let totalDuration = 0;
@@ -282,13 +272,21 @@ async function processJob(jobId, data) {
     fs.writeFileSync(loopListFile, loopEntries.join('\n'));
 
     const loopedVideoPath = path.join(jobDir, 'looped_video.mp4');
-    execSync(`ffmpeg -y -f concat -safe 0 -i "${loopListFile}" -t ${audioDuration} -c:v libx264 -preset ultrafast -crf 28 "${loopedVideoPath}"`, { timeout: 300000 });
+    execSync(
+      `ffmpeg -y -f concat -safe 0 -i "${loopListFile}" -t ${audioDuration} -c:v libx264 -preset ultrafast -crf 28 "${loopedVideoPath}"`,
+      { timeout: 300000 }
+    );
 
+    // ── Merge video + audio ──────────────────────────────────────────────────
     jobs[jobId].progress = 'Mesclando vídeo e áudio...';
     const outputPath = path.join(jobDir, 'output.mp4');
-    execSync(`ffmpeg -y -i "${loopedVideoPath}" -i "${finalAudioPath}" -map 0:v -map 1:a -c:v copy -c:a aac -shortest "${outputPath}"`, { timeout: 120000 });
+    execSync(
+      `ffmpeg -y -i "${loopedVideoPath}" -i "${finalAudioPath}" -map 0:v -map 1:a -c:v copy -c:a aac -shortest "${outputPath}"`,
+      { timeout: 120000 }
+    );
     console.log(`[${jobId}] Vídeo final gerado`);
 
+    // ── Upload R2 ────────────────────────────────────────────────────────────
     jobs[jobId].progress = 'Enviando para Cloudflare R2...';
     const r2Key = `${jobId}.mp4`;
     const publicUrl = await uploadToR2(outputPath, r2Key);
@@ -308,7 +306,7 @@ async function processJob(jobId, data) {
 }
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', version: '5.3', storage: 'Cloudflare R2' });
+  res.json({ status: 'ok', version: '5.4', storage: 'Cloudflare R2', format: '1920x1080' });
 });
 
 app.post('/render', authMiddleware, async (req, res) => {
@@ -330,6 +328,6 @@ app.get('/jobs', authMiddleware, (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`FacelessAI Render Server v5.3 rodando na porta ${PORT}`);
-  console.log(`Storage: Cloudflare R2 | FFmpeg: ${execSync('ffmpeg -version').toString().split('\n')[0]}`);
+  console.log(`FacelessAI Render Server v5.4 rodando na porta ${PORT}`);
+  console.log(`Storage: Cloudflare R2 | Formato: 1920x1080 | FFmpeg: ${execSync('ffmpeg -version').toString().split('\n')[0]}`);
 });
