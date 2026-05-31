@@ -4,11 +4,19 @@ const fs = require('fs');
 const path = require('path');
 const https = require('https');
 const http = require('http');
+const crypto = require('crypto');
 
 const app = express();
 app.use(express.json({ limit: '50mb' }));
 
 const AUTH_KEY = process.env.AUTH_KEY || 'facelessai2026xaviersecretkey32x';
+const R2_ACCOUNT_ID = 'dcd6de84a693624dc026f7bb36c15512';
+const R2_ACCESS_KEY = 'b87fed362846fe8a45021f67254cada5';
+const R2_SECRET_KEY = '6a4511f9fe8039b9839486dcdc3075dcfd2aad4355e73f98de4eecd24ccf0ed9';
+const R2_BUCKET = 'facelessai-videos';
+const R2_ENDPOINT = `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`;
+const R2_PUBLIC_URL = 'https://pub-5a163e6e865546d38356eb3df280caaa.r2.dev';
+
 const jobs = {};
 
 function authMiddleware(req, res, next) {
@@ -37,7 +45,7 @@ function downloadFile(url, dest) {
   });
 }
 
-function httpsPost(options, postData) {
+function httpsRequest(options, body) {
   return new Promise((resolve, reject) => {
     const req = https.request(options, (res) => {
       const chunks = [];
@@ -45,9 +53,80 @@ function httpsPost(options, postData) {
       res.on('end', () => resolve({ statusCode: res.statusCode, body: Buffer.concat(chunks) }));
     });
     req.on('error', reject);
-    req.write(postData);
+    if (body) req.write(body);
     req.end();
   });
+}
+
+// AWS Signature V4 for R2
+function signR2Request(method, key, contentType, bodyBuffer) {
+  const now = new Date();
+  const date = now.toISOString().replace(/[:-]|\.\d{3}/g, '').slice(0, 8);
+  const datetime = now.toISOString().replace(/[:-]|\.\d{3}/g, '').slice(0, 15) + 'Z';
+  const region = 'auto';
+  const service = 's3';
+  const host = `${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`;
+
+  const payloadHash = crypto.createHash('sha256').update(bodyBuffer).digest('hex');
+
+  const canonicalHeaders = `content-type:${contentType}\nhost:${host}\nx-amz-content-sha256:${payloadHash}\nx-amz-date:${datetime}\n`;
+  const signedHeaders = 'content-type;host;x-amz-content-sha256;x-amz-date';
+
+  const canonicalRequest = [
+    method,
+    `/${R2_BUCKET}/${key}`,
+    '',
+    canonicalHeaders,
+    signedHeaders,
+    payloadHash
+  ].join('\n');
+
+  const credentialScope = `${date}/${region}/${service}/aws4_request`;
+  const stringToSign = [
+    'AWS4-HMAC-SHA256',
+    datetime,
+    credentialScope,
+    crypto.createHash('sha256').update(canonicalRequest).digest('hex')
+  ].join('\n');
+
+  const hmac = (key, data) => crypto.createHmac('sha256', key).update(data).digest();
+  const signingKey = hmac(hmac(hmac(hmac(`AWS4${R2_SECRET_KEY}`, date), region), service), 'aws4_request');
+  const signature = crypto.createHmac('sha256', signingKey).update(stringToSign).digest('hex');
+
+  const authorization = `AWS4-HMAC-SHA256 Credential=${R2_ACCESS_KEY}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+
+  return {
+    host,
+    datetime,
+    payloadHash,
+    authorization,
+    path: `/${R2_BUCKET}/${key}`
+  };
+}
+
+async function uploadToR2(filePath, key) {
+  const fileBuffer = fs.readFileSync(filePath);
+  const contentType = 'video/mp4';
+  const { host, datetime, payloadHash, authorization, path: reqPath } = signR2Request('PUT', key, contentType, fileBuffer);
+
+  const result = await httpsRequest({
+    hostname: host,
+    path: reqPath,
+    method: 'PUT',
+    headers: {
+      'Content-Type': contentType,
+      'Content-Length': fileBuffer.length,
+      'x-amz-date': datetime,
+      'x-amz-content-sha256': payloadHash,
+      'Authorization': authorization,
+    },
+  }, fileBuffer);
+
+  if (result.statusCode !== 200) {
+    throw new Error(`R2 upload error ${result.statusCode}: ${result.body.toString()}`);
+  }
+
+  return `${R2_PUBLIC_URL}/${key}`;
 }
 
 function splitIntoChunks(text, maxChars = 4000) {
@@ -97,7 +176,7 @@ async function generateTTSChunk(text, voice, model, apiKey, outputPath) {
       'Content-Length': Buffer.byteLength(body),
     },
   };
-  const result = await httpsPost(options, body);
+  const result = await httpsRequest(options, body);
   if (result.statusCode !== 200) {
     throw new Error(`OpenAI TTS error ${result.statusCode}: ${result.body.toString()}`);
   }
@@ -112,15 +191,7 @@ async function processJob(jobId, data) {
     jobs[jobId].status = 'processing';
     jobs[jobId].progress = 'Iniciando...';
 
-    const {
-      script,
-      video_clips,
-      openai_api_key,
-      tts_voice = 'alloy',
-      tts_model = 'tts-1',
-      audio_url,
-    } = data;
-
+    const { script, video_clips, openai_api_key, tts_voice = 'alloy', tts_model = 'tts-1', audio_url } = data;
     let finalAudioPath = path.join(jobDir, 'final_audio.mp3');
 
     if (script && openai_api_key) {
@@ -156,27 +227,21 @@ async function processJob(jobId, data) {
     jobs[jobId].progress = 'Calculando duração do áudio...';
     let audioDuration;
     try {
-      const durationOutput = execSync(
-        `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${finalAudioPath}"`
-      ).toString().trim();
-      audioDuration = parseFloat(durationOutput);
+      const d = execSync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${finalAudioPath}"`).toString().trim();
+      audioDuration = parseFloat(d);
       if (isNaN(audioDuration) || audioDuration <= 0) throw new Error('Duração inválida');
     } catch (e) {
       const wavPath = path.join(jobDir, 'audio_check.wav');
       execSync(`ffmpeg -y -i "${finalAudioPath}" "${wavPath}"`);
-      const durationOutput = execSync(
-        `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${wavPath}"`
-      ).toString().trim();
-      audioDuration = parseFloat(durationOutput);
+      const d = execSync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${wavPath}"`).toString().trim();
+      audioDuration = parseFloat(d);
       fs.unlinkSync(wavPath);
     }
     console.log(`[${jobId}] Duração do áudio: ${audioDuration}s`);
 
-    // ── Download clips (max 5 para economizar tempo) ─────────────────────────
     jobs[jobId].progress = 'Baixando clips de vídeo...';
     const clipPaths = [];
     const clips = Array.isArray(video_clips) ? video_clips.slice(0, 5) : [];
-
     for (let i = 0; i < clips.length; i++) {
       const clipPath = path.join(jobDir, `clip_${i}.mp4`);
       try {
@@ -184,96 +249,54 @@ async function processJob(jobId, data) {
         clipPaths.push(clipPath);
         console.log(`[${jobId}] Clip ${i + 1}/${clips.length} baixado`);
       } catch (e) {
-        console.warn(`[${jobId}] Falha ao baixar clip ${i}: ${e.message}`);
+        console.warn(`[${jobId}] Falha clip ${i}: ${e.message}`);
       }
     }
-
     if (clipPaths.length === 0) throw new Error('Nenhum clip de vídeo disponível');
 
-    // ── Normalize clips - 720x1280 ultrafast ────────────────────────────────
     jobs[jobId].progress = 'Normalizando clips...';
     const normalizedPaths = [];
     for (let i = 0; i < clipPaths.length; i++) {
       const normPath = path.join(jobDir, `norm_${i}.mp4`);
-      execSync(
-        `ffmpeg -y -i "${clipPaths[i]}" -vf "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1" -r 30 -an -c:v libx264 -preset ultrafast -crf 28 "${normPath}"`,
-        { timeout: 120000 }
-      );
+      execSync(`ffmpeg -y -i "${clipPaths[i]}" -vf "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,setsar=1" -r 30 -an -c:v libx264 -preset ultrafast -crf 28 "${normPath}"`, { timeout: 120000 });
       normalizedPaths.push(normPath);
       console.log(`[${jobId}] Clip ${i + 1} normalizado`);
     }
 
-    // ── Loop clips até cobrir audioDuration ──────────────────────────────────
     jobs[jobId].progress = 'Montando vídeo...';
     const loopListFile = path.join(jobDir, 'loop_list.txt');
     let totalDuration = 0;
     const loopEntries = [];
-
     while (totalDuration < audioDuration) {
       for (const np of normalizedPaths) {
         if (totalDuration >= audioDuration) break;
         let clipDur = 10;
         try {
-          const cd = execSync(
-            `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${np}"`
-          ).toString().trim();
+          const cd = execSync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${np}"`).toString().trim();
           clipDur = parseFloat(cd) || 10;
         } catch {}
         loopEntries.push(`file '${np}'`);
         totalDuration += clipDur;
       }
     }
-
     fs.writeFileSync(loopListFile, loopEntries.join('\n'));
 
     const loopedVideoPath = path.join(jobDir, 'looped_video.mp4');
-    execSync(
-      `ffmpeg -y -f concat -safe 0 -i "${loopListFile}" -t ${audioDuration} -c:v libx264 -preset ultrafast -crf 28 "${loopedVideoPath}"`,
-      { timeout: 300000 }
-    );
-    console.log(`[${jobId}] Vídeo loopado gerado`);
+    execSync(`ffmpeg -y -f concat -safe 0 -i "${loopListFile}" -t ${audioDuration} -c:v libx264 -preset ultrafast -crf 28 "${loopedVideoPath}"`, { timeout: 300000 });
 
-    // ── Merge video + audio ──────────────────────────────────────────────────
     jobs[jobId].progress = 'Mesclando vídeo e áudio...';
     const outputPath = path.join(jobDir, 'output.mp4');
-    execSync(
-      `ffmpeg -y -i "${loopedVideoPath}" -i "${finalAudioPath}" -map 0:v -map 1:a -c:v copy -c:a aac -shortest "${outputPath}"`,
-      { timeout: 120000 }
-    );
+    execSync(`ffmpeg -y -i "${loopedVideoPath}" -i "${finalAudioPath}" -map 0:v -map 1:a -c:v copy -c:a aac -shortest "${outputPath}"`, { timeout: 120000 });
     console.log(`[${jobId}] Vídeo final gerado`);
 
-    // ── Upload to Supabase ───────────────────────────────────────────────────
-    if (data.supabase_url && data.supabase_key) {
-      jobs[jobId].progress = 'Enviando para Supabase...';
-      const videoBuffer = fs.readFileSync(outputPath);
+    jobs[jobId].progress = 'Enviando para Cloudflare R2...';
+    const r2Key = `${jobId}.mp4`;
+    const publicUrl = await uploadToR2(outputPath, r2Key);
+    console.log(`[${jobId}] Upload R2 concluído: ${publicUrl}`);
 
-      const uploadOptions = {
-        hostname: new URL(data.supabase_url).hostname,
-        path: `/storage/v1/object/facelessai-videos/${jobId}.mp4`,
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${data.supabase_key}`,
-          'Content-Type': 'video/mp4',
-          'Content-Length': videoBuffer.length,
-        },
-      };
-
-      const uploadResult = await httpsPost(uploadOptions, videoBuffer);
-      if (uploadResult.statusCode !== 200 && uploadResult.statusCode !== 201) {
-        throw new Error(`Supabase upload error ${uploadResult.statusCode}: ${uploadResult.body.toString()}`);
-      }
-
-      const publicUrl = `${data.supabase_url}/storage/v1/object/public/facelessai-videos/${jobId}.mp4`;
-      jobs[jobId].status = 'completed';
-      jobs[jobId].progress = 'Concluído';
-      jobs[jobId].video_url = publicUrl;
-      console.log(`[${jobId}] Upload concluído: ${publicUrl}`);
-    } else {
-      const videoBuffer = fs.readFileSync(outputPath);
-      jobs[jobId].status = 'completed';
-      jobs[jobId].progress = 'Concluído';
-      jobs[jobId].video_base64 = videoBuffer.toString('base64');
-    }
+    jobs[jobId].status = 'completed';
+    jobs[jobId].progress = 'Concluído';
+    jobs[jobId].video_url = publicUrl;
 
   } catch (error) {
     console.error(`[${jobId}] ERRO:`, error.message);
@@ -285,7 +308,7 @@ async function processJob(jobId, data) {
 }
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', version: '5.2', jobs_in_memory: Object.keys(jobs).length });
+  res.json({ status: 'ok', version: '5.3', storage: 'Cloudflare R2' });
 });
 
 app.post('/render', authMiddleware, async (req, res) => {
@@ -307,6 +330,6 @@ app.get('/jobs', authMiddleware, (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`FacelessAI Render Server v5.2 rodando na porta ${PORT}`);
-  console.log(`TTS em chunks: SIM | FFmpeg: ${execSync('ffmpeg -version').toString().split('\n')[0]}`);
+  console.log(`FacelessAI Render Server v5.3 rodando na porta ${PORT}`);
+  console.log(`Storage: Cloudflare R2 | FFmpeg: ${execSync('ffmpeg -version').toString().split('\n')[0]}`);
 });
