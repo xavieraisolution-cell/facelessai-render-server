@@ -43,6 +43,33 @@ function generateKlingJWT(ak, sk) {
   return `${header}.${payload}.${sig}`;
 }
 
+function klingRequest(method, path, token, body) {
+  return new Promise((resolve, reject) => {
+    const bodyStr = body ? JSON.stringify(body) : null;
+    const options = {
+      hostname: 'api.klingai.com',
+      path,
+      method,
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      }
+    };
+    if (bodyStr) options.headers['Content-Length'] = Buffer.byteLength(bodyStr);
+    const req = https.request(options, (res) => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => {
+        try { resolve(JSON.parse(Buffer.concat(chunks).toString())); }
+        catch (e) { reject(e); }
+      });
+    });
+    req.on('error', reject);
+    if (bodyStr) req.write(bodyStr);
+    req.end();
+  });
+}
+
 function downloadFile(url, dest) {
   return new Promise((resolve, reject) => {
     const file = fs.createWriteStream(dest);
@@ -328,10 +355,10 @@ async function processJob(jobId, data) {
 }
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', version: '5.6', storage: 'Cloudflare R2', db: 'Supabase' });
+  res.json({ status: 'ok', version: '5.7', storage: 'Cloudflare R2', db: 'Supabase' });
 });
 
-// ── Novo endpoint: gera JWT para Kling AI ──────────────────────────────────
+// ── Gera JWT para Kling AI ─────────────────────────────────────────────────
 app.post('/kling-token', authMiddleware, (req, res) => {
   const { access_key, secret_key } = req.body;
   if (!access_key || !secret_key) {
@@ -339,6 +366,89 @@ app.post('/kling-token', authMiddleware, (req, res) => {
   }
   const token = generateKlingJWT(access_key, secret_key);
   res.json({ token });
+});
+
+// ── Cria tarefas de vídeo no Kling AI ─────────────────────────────────────
+app.post('/kling-create-tasks', authMiddleware, async (req, res) => {
+  const { access_key, secret_key, scenes } = req.body;
+  if (!access_key || !secret_key || !scenes) {
+    return res.status(400).json({ error: 'access_key, secret_key and scenes required' });
+  }
+
+  const token = generateKlingJWT(access_key, secret_key);
+  const taskIds = [];
+  const errors = [];
+
+  for (let i = 0; i < scenes.length; i++) {
+    try {
+      const result = await klingRequest('POST', '/v1/videos/text2video', token, {
+        model: 'kling-v1',
+        prompt: scenes[i].prompt,
+        duration: '5',
+        aspect_ratio: '16:9'
+      });
+
+      if (result.data && result.data.task_id) {
+        taskIds.push(result.data.task_id);
+        console.log(`Kling scene ${i+1} task_id: ${result.data.task_id}`);
+      } else {
+        errors.push({ scene: i, error: JSON.stringify(result) });
+        console.error(`Kling scene ${i+1} error:`, JSON.stringify(result));
+      }
+    } catch (e) {
+      errors.push({ scene: i, error: e.message });
+    }
+  }
+
+  res.json({ task_ids: taskIds, errors });
+});
+
+// ── Faz polling das tarefas Kling e retorna URLs dos vídeos ───────────────
+app.post('/kling-poll-tasks', authMiddleware, async (req, res) => {
+  const { access_key, secret_key, task_ids, max_wait_seconds = 300 } = req.body;
+  if (!access_key || !secret_key || !task_ids) {
+    return res.status(400).json({ error: 'access_key, secret_key and task_ids required' });
+  }
+
+  const token = generateKlingJWT(access_key, secret_key);
+  const videoUrls = [];
+  const startTime = Date.now();
+
+  for (const taskId of task_ids) {
+    let videoUrl = null;
+    let attempts = 0;
+
+    while (attempts < 20) {
+      if ((Date.now() - startTime) > max_wait_seconds * 1000) {
+        console.warn(`Timeout waiting for task ${taskId}`);
+        break;
+      }
+
+      try {
+        const result = await klingRequest('GET', `/v1/videos/text2video/${taskId}`, token);
+
+        if (result.data && result.data.task_status === 'succeed') {
+          videoUrl = result.data.task_result?.videos?.[0]?.url;
+          console.log(`Task ${taskId} done: ${videoUrl}`);
+          break;
+        } else if (result.data && result.data.task_status === 'failed') {
+          console.error(`Task ${taskId} failed`);
+          break;
+        } else {
+          console.log(`Task ${taskId} status: ${result.data?.task_status} (attempt ${attempts+1})`);
+        }
+      } catch (e) {
+        console.error(`Poll error for ${taskId}:`, e.message);
+      }
+
+      attempts++;
+      await new Promise(r => setTimeout(r, 15000));
+    }
+
+    if (videoUrl) videoUrls.push(videoUrl);
+  }
+
+  res.json({ video_urls: videoUrls, count: videoUrls.length });
 });
 
 app.post('/render', authMiddleware, async (req, res) => {
@@ -360,6 +470,6 @@ app.get('/jobs', authMiddleware, (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`FacelessAI Render Server v5.6 rodando na porta ${PORT}`);
+  console.log(`FacelessAI Render Server v5.7 rodando na porta ${PORT}`);
   console.log(`Storage: R2 | DB: Supabase | FFmpeg: ${execSync('ffmpeg -version').toString().split('\n')[0]}`);
 });
