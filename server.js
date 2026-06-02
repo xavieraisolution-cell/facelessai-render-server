@@ -28,6 +28,21 @@ function authMiddleware(req, res, next) {
   next();
 }
 
+function generateKlingJWT(ak, sk) {
+  function base64url(obj) {
+    return Buffer.from(JSON.stringify(obj)).toString('base64')
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+  }
+  const now = Math.floor(Date.now() / 1000);
+  const header = base64url({ alg: 'HS256', typ: 'JWT' });
+  const payload = base64url({ iss: ak, exp: now + 1800, nbf: now - 5 });
+  const sig = crypto.createHmac('sha256', sk)
+    .update(`${header}.${payload}`)
+    .digest('base64')
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+  return `${header}.${payload}.${sig}`;
+}
+
 function downloadFile(url, dest) {
   return new Promise((resolve, reject) => {
     const file = fs.createWriteStream(dest);
@@ -296,7 +311,6 @@ async function processJob(jobId, data) {
     jobs[jobId].progress = 'Concluído';
     jobs[jobId].video_url = publicUrl;
 
-    // ── Atualiza Supabase com status completed e video_url ──────────────────
     await updateSupabase(jobId, {
       status: 'completed',
       video_url: publicUrl,
@@ -314,7 +328,17 @@ async function processJob(jobId, data) {
 }
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', version: '5.5', storage: 'Cloudflare R2', db: 'Supabase' });
+  res.json({ status: 'ok', version: '5.6', storage: 'Cloudflare R2', db: 'Supabase' });
+});
+
+// ── Novo endpoint: gera JWT para Kling AI ──────────────────────────────────
+app.post('/kling-token', authMiddleware, (req, res) => {
+  const { access_key, secret_key } = req.body;
+  if (!access_key || !secret_key) {
+    return res.status(400).json({ error: 'access_key and secret_key required' });
+  }
+  const token = generateKlingJWT(access_key, secret_key);
+  res.json({ token });
 });
 
 app.post('/render', authMiddleware, async (req, res) => {
@@ -336,6 +360,6 @@ app.get('/jobs', authMiddleware, (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`FacelessAI Render Server v5.5 rodando na porta ${PORT}`);
+  console.log(`FacelessAI Render Server v5.6 rodando na porta ${PORT}`);
   console.log(`Storage: R2 | DB: Supabase | FFmpeg: ${execSync('ffmpeg -version').toString().split('\n')[0]}`);
 });
