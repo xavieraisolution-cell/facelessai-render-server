@@ -43,17 +43,14 @@ function generateKlingJWT(ak, sk) {
   return `${header}.${payload}.${sig}`;
 }
 
-function klingRequest(method, path, token, body) {
+function klingRequest(method, reqPath, token, body) {
   return new Promise((resolve, reject) => {
     const bodyStr = body ? JSON.stringify(body) : null;
     const options = {
       hostname: 'api.klingai.com',
-      path,
+      path: reqPath,
       method,
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      }
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
     };
     if (bodyStr) options.headers['Content-Length'] = Buffer.byteLength(bodyStr);
     const req = https.request(options, (res) => {
@@ -66,6 +63,39 @@ function klingRequest(method, path, token, body) {
     });
     req.on('error', reject);
     if (bodyStr) req.write(bodyStr);
+    req.end();
+  });
+}
+
+async function searchPexelsVideos(query, apiKey, count = 5) {
+  return new Promise((resolve, reject) => {
+    const encodedQuery = encodeURIComponent(query);
+    const options = {
+      hostname: 'api.pexels.com',
+      path: `/videos/search?query=${encodedQuery}&per_page=${count}&orientation=landscape&size=medium`,
+      method: 'GET',
+      headers: { 'Authorization': apiKey }
+    };
+    const req = https.request(options, (res) => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => {
+        try {
+          const data = JSON.parse(Buffer.concat(chunks).toString());
+          const urls = [];
+          if (data.videos) {
+            for (const video of data.videos) {
+              const file = video.video_files
+                .filter(f => f.quality === 'hd' || f.quality === 'sd')
+                .sort((a, b) => b.width - a.width)[0];
+              if (file) urls.push(file.link);
+            }
+          }
+          resolve(urls);
+        } catch (e) { reject(e); }
+      });
+    });
+    req.on('error', reject);
     req.end();
   });
 }
@@ -130,19 +160,16 @@ function signR2Request(method, key, contentType, bodyBuffer) {
   const region = 'auto';
   const service = 's3';
   const host = `${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`;
-
   const payloadHash = crypto.createHash('sha256').update(bodyBuffer).digest('hex');
   const canonicalHeaders = `content-type:${contentType}\nhost:${host}\nx-amz-content-sha256:${payloadHash}\nx-amz-date:${datetime}\n`;
   const signedHeaders = 'content-type;host;x-amz-content-sha256;x-amz-date';
   const canonicalRequest = [method, `/${R2_BUCKET}/${key}`, '', canonicalHeaders, signedHeaders, payloadHash].join('\n');
   const credentialScope = `${date}/${region}/${service}/aws4_request`;
   const stringToSign = ['AWS4-HMAC-SHA256', datetime, credentialScope, crypto.createHash('sha256').update(canonicalRequest).digest('hex')].join('\n');
-
-  const hmac = (key, data) => crypto.createHmac('sha256', key).update(data).digest();
+  const hmac = (k, d) => crypto.createHmac('sha256', k).update(d).digest();
   const signingKey = hmac(hmac(hmac(hmac(`AWS4${R2_SECRET_KEY}`, date), region), service), 'aws4_request');
   const signature = crypto.createHmac('sha256', signingKey).update(stringToSign).digest('hex');
   const authorization = `AWS4-HMAC-SHA256 Credential=${R2_ACCESS_KEY}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
-
   return { host, datetime, payloadHash, authorization, path: `/${R2_BUCKET}/${key}` };
 }
 
@@ -150,23 +177,14 @@ async function uploadToR2(filePath, key) {
   const fileBuffer = fs.readFileSync(filePath);
   const contentType = 'video/mp4';
   const { host, datetime, payloadHash, authorization, path: reqPath } = signR2Request('PUT', key, contentType, fileBuffer);
-
   const result = await httpsRequest({
-    hostname: host,
-    path: reqPath,
-    method: 'PUT',
+    hostname: host, path: reqPath, method: 'PUT',
     headers: {
-      'Content-Type': contentType,
-      'Content-Length': fileBuffer.length,
-      'x-amz-date': datetime,
-      'x-amz-content-sha256': payloadHash,
-      'Authorization': authorization,
+      'Content-Type': contentType, 'Content-Length': fileBuffer.length,
+      'x-amz-date': datetime, 'x-amz-content-sha256': payloadHash, 'Authorization': authorization,
     },
   }, fileBuffer);
-
-  if (result.statusCode !== 200) {
-    throw new Error(`R2 upload error ${result.statusCode}: ${result.body.toString()}`);
-  }
+  if (result.statusCode !== 200) throw new Error(`R2 upload error ${result.statusCode}: ${result.body.toString()}`);
   return `${R2_PUBLIC_URL}/${key}`;
 }
 
@@ -178,49 +196,32 @@ function splitIntoChunks(text, maxChars = 4000) {
     if ((current + sentence).length > maxChars) {
       if (current.trim()) chunks.push(current.trim());
       current = sentence;
-    } else {
-      current += sentence;
-    }
+    } else { current += sentence; }
   }
   if (current.trim()) chunks.push(current.trim());
-
   const finalChunks = [];
   for (const chunk of chunks) {
-    if (chunk.length <= maxChars) {
-      finalChunks.push(chunk);
-    } else {
-      const words = chunk.split(' ');
-      let part = '';
-      for (const word of words) {
-        if ((part + ' ' + word).length > maxChars) {
-          if (part.trim()) finalChunks.push(part.trim());
-          part = word;
-        } else {
-          part += ' ' + word;
-        }
-      }
-      if (part.trim()) finalChunks.push(part.trim());
+    if (chunk.length <= maxChars) { finalChunks.push(chunk); continue; }
+    const words = chunk.split(' ');
+    let part = '';
+    for (const word of words) {
+      if ((part + ' ' + word).length > maxChars) {
+        if (part.trim()) finalChunks.push(part.trim());
+        part = word;
+      } else { part += ' ' + word; }
     }
+    if (part.trim()) finalChunks.push(part.trim());
   }
   return finalChunks;
 }
 
 async function generateTTSChunk(text, voice, model, apiKey, outputPath) {
   const body = JSON.stringify({ model, input: text, voice, response_format: 'mp3' });
-  const options = {
-    hostname: 'api.openai.com',
-    path: '/v1/audio/speech',
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-      'Content-Length': Buffer.byteLength(body),
-    },
-  };
-  const result = await httpsRequest(options, body);
-  if (result.statusCode !== 200) {
-    throw new Error(`OpenAI TTS error ${result.statusCode}: ${result.body.toString()}`);
-  }
+  const result = await httpsRequest({
+    hostname: 'api.openai.com', path: '/v1/audio/speech', method: 'POST',
+    headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+  }, body);
+  if (result.statusCode !== 200) throw new Error(`OpenAI TTS error ${result.statusCode}: ${result.body.toString()}`);
   fs.writeFileSync(outputPath, result.body);
 }
 
@@ -232,7 +233,11 @@ async function processJob(jobId, data) {
     jobs[jobId].status = 'processing';
     jobs[jobId].progress = 'Iniciando...';
 
-    const { script, video_clips, openai_api_key, tts_voice = 'alloy', tts_model = 'tts-1', audio_url, video_title = 'Curiosidades Misteriosas' } = data;
+    const {
+      script, video_clips, openai_api_key, tts_voice = 'alloy',
+      tts_model = 'tts-1', audio_url, video_title = 'FacelessAI',
+      pexels_api_key, pexels_query, source = 'kling'
+    } = data;
     jobs[jobId].video_title = video_title;
 
     let finalAudioPath = path.join(jobDir, 'final_audio.mp3');
@@ -240,21 +245,16 @@ async function processJob(jobId, data) {
     if (script && openai_api_key) {
       jobs[jobId].progress = 'Gerando áudio TTS...';
       const chunks = splitIntoChunks(script, 4000);
-      console.log(`[${jobId}] Dividindo roteiro em ${chunks.length} chunks`);
-
       const chunkPaths = [];
       for (let i = 0; i < chunks.length; i++) {
         const chunkPath = path.join(jobDir, `chunk_${i}.mp3`);
         jobs[jobId].progress = `TTS chunk ${i + 1}/${chunks.length}...`;
         await generateTTSChunk(chunks[i], tts_voice, tts_model, openai_api_key, chunkPath);
         chunkPaths.push(chunkPath);
-        console.log(`[${jobId}] Chunk ${i + 1}/${chunks.length} gerado`);
       }
-
       if (chunkPaths.length === 1) {
         fs.copyFileSync(chunkPaths[0], finalAudioPath);
       } else {
-        jobs[jobId].progress = 'Concatenando áudios...';
         const listFile = path.join(jobDir, 'chunks.txt');
         fs.writeFileSync(listFile, chunkPaths.map(p => `file '${p}'`).join('\n'));
         execSync(`ffmpeg -y -f concat -safe 0 -i "${listFile}" -c copy "${finalAudioPath}"`);
@@ -279,22 +279,32 @@ async function processJob(jobId, data) {
       audioDuration = parseFloat(d);
       fs.unlinkSync(wavPath);
     }
-    console.log(`[${jobId}] Duração: ${audioDuration}s`);
+
+    let clipUrls = Array.isArray(video_clips) ? [...video_clips] : [];
+
+    // Se source=pexels ou não tem clips, busca no Pexels
+    if ((source === 'pexels' || clipUrls.length === 0) && pexels_api_key) {
+      jobs[jobId].progress = 'Buscando clips no Pexels...';
+      const query = pexels_query || video_title;
+      const pexelsUrls = await searchPexelsVideos(query, pexels_api_key, 5);
+      clipUrls = [...clipUrls, ...pexelsUrls];
+      console.log(`[${jobId}] Pexels encontrou ${pexelsUrls.length} clips para "${query}"`);
+    }
+
+    if (clipUrls.length === 0) throw new Error('Nenhum clip de vídeo disponível');
 
     jobs[jobId].progress = 'Baixando clips...';
     const clipPaths = [];
-    const clips = Array.isArray(video_clips) ? video_clips.slice(0, 5) : [];
-    for (let i = 0; i < clips.length; i++) {
+    for (let i = 0; i < Math.min(clipUrls.length, 5); i++) {
       const clipPath = path.join(jobDir, `clip_${i}.mp4`);
       try {
-        await downloadFile(clips[i], clipPath);
+        await downloadFile(clipUrls[i], clipPath);
         clipPaths.push(clipPath);
-        console.log(`[${jobId}] Clip ${i + 1}/${clips.length} baixado`);
       } catch (e) {
         console.warn(`[${jobId}] Falha clip ${i}: ${e.message}`);
       }
     }
-    if (clipPaths.length === 0) throw new Error('Nenhum clip de vídeo disponível');
+    if (clipPaths.length === 0) throw new Error('Nenhum clip baixado com sucesso');
 
     jobs[jobId].progress = 'Normalizando clips...';
     const normalizedPaths = [];
@@ -332,11 +342,11 @@ async function processJob(jobId, data) {
     jobs[jobId].progress = 'Enviando para Cloudflare R2...';
     const r2Key = `${jobId}.mp4`;
     const publicUrl = await uploadToR2(outputPath, r2Key);
-    console.log(`[${jobId}] Upload R2: ${publicUrl}`);
 
     jobs[jobId].status = 'completed';
     jobs[jobId].progress = 'Concluído';
     jobs[jobId].video_url = publicUrl;
+    jobs[jobId].source = source;
 
     await updateSupabase(jobId, {
       status: 'completed',
@@ -355,100 +365,69 @@ async function processJob(jobId, data) {
 }
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', version: '5.7', storage: 'Cloudflare R2', db: 'Supabase' });
+  res.json({ status: 'ok', version: '5.8', storage: 'Cloudflare R2', db: 'Supabase', features: ['kling', 'pexels'] });
 });
 
-// ── Gera JWT para Kling AI ─────────────────────────────────────────────────
 app.post('/kling-token', authMiddleware, (req, res) => {
   const { access_key, secret_key } = req.body;
-  if (!access_key || !secret_key) {
-    return res.status(400).json({ error: 'access_key and secret_key required' });
-  }
-  const token = generateKlingJWT(access_key, secret_key);
-  res.json({ token });
+  if (!access_key || !secret_key) return res.status(400).json({ error: 'access_key and secret_key required' });
+  res.json({ token: generateKlingJWT(access_key, secret_key) });
 });
 
-// ── Cria tarefas de vídeo no Kling AI ─────────────────────────────────────
 app.post('/kling-create-tasks', authMiddleware, async (req, res) => {
   const { access_key, secret_key, scenes } = req.body;
-  if (!access_key || !secret_key || !scenes) {
-    return res.status(400).json({ error: 'access_key, secret_key and scenes required' });
-  }
-
+  if (!access_key || !secret_key || !scenes) return res.status(400).json({ error: 'access_key, secret_key and scenes required' });
   const token = generateKlingJWT(access_key, secret_key);
   const taskIds = [];
   const errors = [];
-
   for (let i = 0; i < scenes.length; i++) {
     try {
       const result = await klingRequest('POST', '/v1/videos/text2video', token, {
-        model: 'kling-v1',
-        prompt: scenes[i].prompt,
-        duration: '5',
-        aspect_ratio: '16:9'
+        model: 'kling-v1', prompt: scenes[i].prompt, duration: '5', aspect_ratio: '16:9'
       });
-
-      if (result.data && result.data.task_id) {
-        taskIds.push(result.data.task_id);
-        console.log(`Kling scene ${i+1} task_id: ${result.data.task_id}`);
-      } else {
-        errors.push({ scene: i, error: JSON.stringify(result) });
-        console.error(`Kling scene ${i+1} error:`, JSON.stringify(result));
-      }
-    } catch (e) {
-      errors.push({ scene: i, error: e.message });
-    }
+      if (result.data && result.data.task_id) taskIds.push(result.data.task_id);
+      else errors.push({ scene: i, error: JSON.stringify(result) });
+    } catch (e) { errors.push({ scene: i, error: e.message }); }
   }
-
   res.json({ task_ids: taskIds, errors });
 });
 
-// ── Faz polling das tarefas Kling e retorna URLs dos vídeos ───────────────
 app.post('/kling-poll-tasks', authMiddleware, async (req, res) => {
   const { access_key, secret_key, task_ids, max_wait_seconds = 300 } = req.body;
-  if (!access_key || !secret_key || !task_ids) {
-    return res.status(400).json({ error: 'access_key, secret_key and task_ids required' });
-  }
-
+  if (!access_key || !secret_key || !task_ids) return res.status(400).json({ error: 'access_key, secret_key and task_ids required' });
   const token = generateKlingJWT(access_key, secret_key);
   const videoUrls = [];
   const startTime = Date.now();
-
   for (const taskId of task_ids) {
     let videoUrl = null;
     let attempts = 0;
-
     while (attempts < 20) {
-      if ((Date.now() - startTime) > max_wait_seconds * 1000) {
-        console.warn(`Timeout waiting for task ${taskId}`);
-        break;
-      }
-
+      if ((Date.now() - startTime) > max_wait_seconds * 1000) break;
       try {
         const result = await klingRequest('GET', `/v1/videos/text2video/${taskId}`, token);
-
         if (result.data && result.data.task_status === 'succeed') {
           videoUrl = result.data.task_result?.videos?.[0]?.url;
-          console.log(`Task ${taskId} done: ${videoUrl}`);
           break;
-        } else if (result.data && result.data.task_status === 'failed') {
-          console.error(`Task ${taskId} failed`);
-          break;
-        } else {
-          console.log(`Task ${taskId} status: ${result.data?.task_status} (attempt ${attempts+1})`);
-        }
-      } catch (e) {
-        console.error(`Poll error for ${taskId}:`, e.message);
-      }
-
+        } else if (result.data && result.data.task_status === 'failed') break;
+      } catch (e) { console.error(`Poll error for ${taskId}:`, e.message); }
       attempts++;
       await new Promise(r => setTimeout(r, 15000));
     }
-
     if (videoUrl) videoUrls.push(videoUrl);
   }
-
   res.json({ video_urls: videoUrls, count: videoUrls.length });
+});
+
+// Novo endpoint: busca clips no Pexels
+app.post('/pexels-search', authMiddleware, async (req, res) => {
+  const { query, api_key, count = 5 } = req.body;
+  if (!query || !api_key) return res.status(400).json({ error: 'query and api_key required' });
+  try {
+    const urls = await searchPexelsVideos(query, api_key, count);
+    res.json({ video_urls: urls, count: urls.length });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.post('/render', authMiddleware, async (req, res) => {
@@ -464,12 +443,11 @@ app.get('/status/:jobId', authMiddleware, (req, res) => {
   res.json({ job_id: req.params.jobId, ...job });
 });
 
-app.get('/jobs', authMiddleware, (req, res) => {
-  res.json(jobs);
-});
+app.get('/jobs', authMiddleware, (req, res) => res.json(jobs));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`FacelessAI Render Server v5.7 rodando na porta ${PORT}`);
-  console.log(`Storage: R2 | DB: Supabase | FFmpeg: ${execSync('ffmpeg -version').toString().split('\n')[0]}`);
+  console.log(`FacelessAI Render Server v5.8 rodando na porta ${PORT}`);
+  console.log(`Storage: R2 | DB: Supabase | Features: Kling AI + Pexels`);
+  console.log(`FFmpeg: ${execSync('ffmpeg -version').toString().split('\n')[0]}`);
 });
