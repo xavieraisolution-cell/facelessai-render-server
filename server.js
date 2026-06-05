@@ -28,6 +28,47 @@ function authMiddleware(req, res, next) {
   next();
 }
 
+// ── NEW v5.9: extract short keyword query from long titles ──
+function extractKeywords(title, language = 'en') {
+  const stopwordsEN = new Set([
+    'a','an','the','and','or','but','in','on','at','to','for','of','with',
+    'by','from','is','was','are','were','be','been','being','have','has',
+    'had','do','does','did','will','would','could','should','may','might',
+    'what','when','where','who','how','why','which','that','this','these',
+    'those','if','then','than','so','yet','both','either','whether','while',
+    'into','through','during','before','after','above','below','between',
+    'your','my','his','her','its','our','their','you','we','they','he','she',
+    'it','i','me','him','us','them','first','last','new','old','just','can',
+    'get','got','make','made','take','took','give','gave','come','came',
+    'feet','fell','happen','happened','happens','things','thing','about',
+    'also','back','even','here','still','such','take','well','much','many',
+    'really','very','never','always','every','each','most','more','some',
+    'actually','literally','basically','truly','completely','absolutely'
+  ]);
+
+  const stopwordsPT = new Set([
+    'o','a','os','as','um','uma','uns','umas','e','ou','mas','em','no','na',
+    'nos','nas','ao','aos','de','do','da','dos','das','por','para','com',
+    'que','se','não','mais','muito','bem','como','quando','onde','quem',
+    'qual','quais','este','esta','estes','estas','esse','essa','isso','aqui',
+    'foi','ser','estar','ter','haver','fazer','ir','vir','ver','dar','saber',
+    'já','ainda','também','então','assim','porque','pois','até','após',
+    'antes','depois','desde','entre','durante','contra','sobre','pelo','pela'
+  ]);
+
+  const stopwords = language === 'pt' ? stopwordsPT : stopwordsEN;
+
+  const words = title
+    .toLowerCase()
+    .replace(/[^a-záéíóúãõàâêôü\s]/gi, ' ')
+    .split(/\s+/)
+    .filter(w => w.length > 3 && !stopwords.has(w));
+
+  const keywords = words.slice(0, 3).join(' ');
+  return keywords || title.split(' ').slice(0, 2).join(' ');
+}
+// ────────────────────────────────────────────────────────────
+
 function generateKlingJWT(ak, sk) {
   function base64url(obj) {
     return Buffer.from(JSON.stringify(obj)).toString('base64')
@@ -236,7 +277,7 @@ async function processJob(jobId, data) {
     const {
       script, video_clips, openai_api_key, tts_voice = 'alloy',
       tts_model = 'tts-1', audio_url, video_title = 'FacelessAI',
-      pexels_api_key, pexels_query, source = 'kling'
+      pexels_api_key, pexels_query, source = 'kling', language = 'en-US'
     } = data;
     jobs[jobId].video_title = video_title;
 
@@ -282,14 +323,26 @@ async function processJob(jobId, data) {
 
     let clipUrls = Array.isArray(video_clips) ? [...video_clips] : [];
 
-    // Se source=pexels ou não tem clips, busca no Pexels
+    // ── v5.9: usa extractKeywords para query curta e eficaz no Pexels ──
     if ((source === 'pexels' || clipUrls.length === 0) && pexels_api_key) {
       jobs[jobId].progress = 'Buscando clips no Pexels...';
-      const query = pexels_query || video_title;
+      const lang = language.startsWith('pt') ? 'pt' : 'en';
+      const query = pexels_query || extractKeywords(video_title, lang);
+      console.log(`[${jobId}] Pexels query: "${query}" (título original: "${video_title}")`);
       const pexelsUrls = await searchPexelsVideos(query, pexels_api_key, 5);
       clipUrls = [...clipUrls, ...pexelsUrls];
       console.log(`[${jobId}] Pexels encontrou ${pexelsUrls.length} clips para "${query}"`);
+
+      // Fallback: se ainda 0 clips, tenta query genérica baseada no niche
+      if (pexelsUrls.length === 0) {
+        const fallbackQuery = lang === 'pt' ? 'natureza cosmos universo' : 'nature cosmos universe';
+        console.log(`[${jobId}] Fallback Pexels query: "${fallbackQuery}"`);
+        const fallbackUrls = await searchPexelsVideos(fallbackQuery, pexels_api_key, 5);
+        clipUrls = [...clipUrls, ...fallbackUrls];
+        console.log(`[${jobId}] Fallback encontrou ${fallbackUrls.length} clips`);
+      }
     }
+    // ────────────────────────────────────────────────────────────────────
 
     if (clipUrls.length === 0) throw new Error('Nenhum clip de vídeo disponível');
 
@@ -365,7 +418,7 @@ async function processJob(jobId, data) {
 }
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', version: '5.8', storage: 'Cloudflare R2', db: 'Supabase', features: ['kling', 'pexels'] });
+  res.json({ status: 'ok', version: '5.9', storage: 'Cloudflare R2', db: 'Supabase', features: ['kling', 'pexels'] });
 });
 
 app.post('/kling-token', authMiddleware, (req, res) => {
@@ -418,7 +471,6 @@ app.post('/kling-poll-tasks', authMiddleware, async (req, res) => {
   res.json({ video_urls: videoUrls, count: videoUrls.length });
 });
 
-// Novo endpoint: busca clips no Pexels
 app.post('/pexels-search', authMiddleware, async (req, res) => {
   const { query, api_key, count = 5 } = req.body;
   if (!query || !api_key) return res.status(400).json({ error: 'query and api_key required' });
@@ -447,7 +499,7 @@ app.get('/jobs', authMiddleware, (req, res) => res.json(jobs));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`FacelessAI Render Server v5.8 rodando na porta ${PORT}`);
-  console.log(`Storage: R2 | DB: Supabase | Features: Kling AI + Pexels`);
+  console.log(`FacelessAI Render Server v5.9 rodando na porta ${PORT}`);
+  console.log(`Storage: R2 | DB: Supabase | Features: Kling AI + Pexels + Smart Keywords`);
   console.log(`FFmpeg: ${execSync('ffmpeg -version').toString().split('\n')[0]}`);
 });
