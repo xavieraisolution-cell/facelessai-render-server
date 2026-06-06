@@ -20,6 +20,35 @@ const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZ
 
 const jobs = {};
 
+// ── v5.10: Job Queue — processa um job por vez ──
+const jobQueue = [];
+let isProcessing = false;
+
+async function enqueueJob(jobId, data) {
+  jobQueue.push({ jobId, data });
+  console.log(`[Queue] Job ${jobId} adicionado. Fila: ${jobQueue.length} jobs.`);
+  if (!isProcessing) {
+    processQueue();
+  }
+}
+
+async function processQueue() {
+  if (jobQueue.length === 0) {
+    isProcessing = false;
+    return;
+  }
+  isProcessing = true;
+  const { jobId, data } = jobQueue.shift();
+  console.log(`[Queue] Iniciando job ${jobId}. Restam ${jobQueue.length} na fila.`);
+  try {
+    await processJob(jobId, data);
+  } catch (e) {
+    console.error(`[Queue] Erro no job ${jobId}:`, e.message);
+  }
+  processQueue();
+}
+// ────────────────────────────────────────────────
+
 function authMiddleware(req, res, next) {
   const auth = req.headers['authorization'] || '';
   if (auth !== `Bearer ${AUTH_KEY}`) {
@@ -28,7 +57,7 @@ function authMiddleware(req, res, next) {
   next();
 }
 
-// ── NEW v5.9: extract short keyword query from long titles ──
+// ── v5.9: extract short keyword query from long titles ──
 function extractKeywords(title, language = 'en') {
   const stopwordsEN = new Set([
     'a','an','the','and','or','but','in','on','at','to','for','of','with',
@@ -298,7 +327,7 @@ async function processJob(jobId, data) {
       } else {
         const listFile = path.join(jobDir, 'chunks.txt');
         fs.writeFileSync(listFile, chunkPaths.map(p => `file '${p}'`).join('\n'));
-        execSync(`ffmpeg -y -f concat -safe 0 -i "${listFile}" -c copy "${finalAudioPath}"`);
+        execSync(`ffmpeg -y -f concat -safe 0 -i "${listFile}" -c copy "${finalAudioPath}"`, { timeout: 120000 });
       }
     } else if (audio_url) {
       jobs[jobId].progress = 'Baixando áudio...';
@@ -310,13 +339,13 @@ async function processJob(jobId, data) {
     jobs[jobId].progress = 'Calculando duração...';
     let audioDuration;
     try {
-      const d = execSync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${finalAudioPath}"`).toString().trim();
+      const d = execSync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${finalAudioPath}"`, { timeout: 30000 }).toString().trim();
       audioDuration = parseFloat(d);
       if (isNaN(audioDuration) || audioDuration <= 0) throw new Error('Duração inválida');
     } catch (e) {
       const wavPath = path.join(jobDir, 'audio_check.wav');
-      execSync(`ffmpeg -y -i "${finalAudioPath}" "${wavPath}"`);
-      const d = execSync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${wavPath}"`).toString().trim();
+      execSync(`ffmpeg -y -i "${finalAudioPath}" "${wavPath}"`, { timeout: 60000 });
+      const d = execSync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${wavPath}"`, { timeout: 30000 }).toString().trim();
       audioDuration = parseFloat(d);
       fs.unlinkSync(wavPath);
     }
@@ -328,12 +357,11 @@ async function processJob(jobId, data) {
       jobs[jobId].progress = 'Buscando clips no Pexels...';
       const lang = language.startsWith('pt') ? 'pt' : 'en';
       const query = pexels_query || extractKeywords(video_title, lang);
-      console.log(`[${jobId}] Pexels query: "${query}" (título original: "${video_title}")`);
+      console.log(`[${jobId}] Pexels query: "${query}" (título: "${video_title}")`);
       const pexelsUrls = await searchPexelsVideos(query, pexels_api_key, 5);
       clipUrls = [...clipUrls, ...pexelsUrls];
       console.log(`[${jobId}] Pexels encontrou ${pexelsUrls.length} clips para "${query}"`);
 
-      // Fallback: se ainda 0 clips, tenta query genérica baseada no niche
       if (pexelsUrls.length === 0) {
         const fallbackQuery = lang === 'pt' ? 'natureza cosmos universo' : 'nature cosmos universe';
         console.log(`[${jobId}] Fallback Pexels query: "${fallbackQuery}"`);
@@ -342,7 +370,6 @@ async function processJob(jobId, data) {
         console.log(`[${jobId}] Fallback encontrou ${fallbackUrls.length} clips`);
       }
     }
-    // ────────────────────────────────────────────────────────────────────
 
     if (clipUrls.length === 0) throw new Error('Nenhum clip de vídeo disponível');
 
@@ -363,7 +390,8 @@ async function processJob(jobId, data) {
     const normalizedPaths = [];
     for (let i = 0; i < clipPaths.length; i++) {
       const normPath = path.join(jobDir, `norm_${i}.mp4`);
-      execSync(`ffmpeg -y -i "${clipPaths[i]}" -vf "scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,setsar=1" -r 30 -an -c:v libx264 -preset ultrafast -crf 28 "${normPath}"`, { timeout: 120000 });
+      // ── v5.10: timeout aumentado para 10 minutos ──
+      execSync(`ffmpeg -y -i "${clipPaths[i]}" -vf "scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,setsar=1" -r 30 -an -c:v libx264 -preset ultrafast -crf 28 "${normPath}"`, { timeout: 600000 });
       normalizedPaths.push(normPath);
     }
 
@@ -376,7 +404,7 @@ async function processJob(jobId, data) {
         if (totalDuration >= audioDuration) break;
         let clipDur = 10;
         try {
-          const cd = execSync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${np}"`).toString().trim();
+          const cd = execSync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${np}"`, { timeout: 30000 }).toString().trim();
           clipDur = parseFloat(cd) || 10;
         } catch {}
         loopEntries.push(`file '${np}'`);
@@ -386,11 +414,12 @@ async function processJob(jobId, data) {
     fs.writeFileSync(loopListFile, loopEntries.join('\n'));
 
     const loopedVideoPath = path.join(jobDir, 'looped_video.mp4');
-    execSync(`ffmpeg -y -f concat -safe 0 -i "${loopListFile}" -t ${audioDuration} -c:v libx264 -preset ultrafast -crf 28 "${loopedVideoPath}"`, { timeout: 300000 });
+    // ── v5.10: timeout aumentado para 15 minutos ──
+    execSync(`ffmpeg -y -f concat -safe 0 -i "${loopListFile}" -t ${audioDuration} -c:v libx264 -preset ultrafast -crf 28 "${loopedVideoPath}"`, { timeout: 900000 });
 
     jobs[jobId].progress = 'Mesclando vídeo e áudio...';
     const outputPath = path.join(jobDir, 'output.mp4');
-    execSync(`ffmpeg -y -i "${loopedVideoPath}" -i "${finalAudioPath}" -map 0:v -map 1:a -c:v copy -c:a aac -shortest "${outputPath}"`, { timeout: 120000 });
+    execSync(`ffmpeg -y -i "${loopedVideoPath}" -i "${finalAudioPath}" -map 0:v -map 1:a -c:v copy -c:a aac -shortest "${outputPath}"`, { timeout: 300000 });
 
     jobs[jobId].progress = 'Enviando para Cloudflare R2...';
     const r2Key = `${jobId}.mp4`;
@@ -404,6 +433,7 @@ async function processJob(jobId, data) {
     await updateSupabase(jobId, {
       status: 'completed',
       video_url: publicUrl,
+      video_title: video_title,
       updated_at: new Date().toISOString()
     });
 
@@ -418,7 +448,14 @@ async function processJob(jobId, data) {
 }
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', version: '5.9', storage: 'Cloudflare R2', db: 'Supabase', features: ['kling', 'pexels'] });
+  res.json({
+    status: 'ok',
+    version: '5.10',
+    storage: 'Cloudflare R2',
+    db: 'Supabase',
+    features: ['kling', 'pexels', 'queue'],
+    queue: { length: jobQueue.length, processing: isProcessing }
+  });
 });
 
 app.post('/kling-token', authMiddleware, (req, res) => {
@@ -485,8 +522,9 @@ app.post('/pexels-search', authMiddleware, async (req, res) => {
 app.post('/render', authMiddleware, async (req, res) => {
   const jobId = req.body.job_id || `job_${Date.now()}`;
   jobs[jobId] = { status: 'queued', progress: 'Na fila...', created_at: new Date().toISOString() };
-  processJob(jobId, req.body).catch(console.error);
-  res.json({ job_id: jobId, status: 'queued' });
+  // ── v5.10: usa fila em vez de processar diretamente ──
+  enqueueJob(jobId, req.body);
+  res.json({ job_id: jobId, status: 'queued', queue_position: jobQueue.length });
 });
 
 app.get('/status/:jobId', authMiddleware, (req, res) => {
@@ -497,9 +535,18 @@ app.get('/status/:jobId', authMiddleware, (req, res) => {
 
 app.get('/jobs', authMiddleware, (req, res) => res.json(jobs));
 
+// ── v5.10: endpoint para ver status da fila ──
+app.get('/queue', authMiddleware, (req, res) => {
+  res.json({
+    queue_length: jobQueue.length,
+    is_processing: isProcessing,
+    pending_jobs: jobQueue.map(j => j.jobId)
+  });
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`FacelessAI Render Server v5.9 rodando na porta ${PORT}`);
-  console.log(`Storage: R2 | DB: Supabase | Features: Kling AI + Pexels + Smart Keywords`);
+  console.log(`FacelessAI Render Server v5.10 rodando na porta ${PORT}`);
+  console.log(`Storage: R2 | DB: Supabase | Features: Kling AI + Pexels + Smart Keywords + Job Queue`);
   console.log(`FFmpeg: ${execSync('ffmpeg -version').toString().split('\n')[0]}`);
 });
