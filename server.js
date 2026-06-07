@@ -20,6 +20,17 @@ const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZ
 
 const jobs = {};
 
+// ── v5.11: sanitiza título para salvar limpo no Supabase ──
+function sanitizeTitle(title) {
+  return (title || 'FacelessAI')
+    .normalize('NFC')
+    .replace(/[\u0000-\u001F\u007F]/g, '')
+    .replace(/[\u2018\u2019\u201A\u201B\u2032\u2035']/g, '')
+    .replace(/[?]/g, '')
+    .trim();
+}
+// ─────────────────────────────────────────────────────────
+
 // ── v5.10: Job Queue — processa um job por vez ──
 const jobQueue = [];
 let isProcessing = false;
@@ -433,7 +444,7 @@ async function processJob(jobId, data) {
     await updateSupabase(jobId, {
       status: 'completed',
       video_url: publicUrl,
-      video_title: video_title,
+      video_title: sanitizeTitle(video_title),
       updated_at: new Date().toISOString()
     });
 
@@ -450,7 +461,7 @@ async function processJob(jobId, data) {
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
-    version: '5.10',
+    version: '5.11',
     storage: 'Cloudflare R2',
     db: 'Supabase',
     features: ['kling', 'pexels', 'queue'],
@@ -546,7 +557,7 @@ app.get('/queue', authMiddleware, (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`FacelessAI Render Server v5.10 rodando na porta ${PORT}`);
-  console.log(`Storage: R2 | DB: Supabase | Features: Kling AI + Pexels + Smart Keywords + Job Queue`);
+  console.log(`FacelessAI Render Server v5.11 rodando na porta ${PORT}`);
+  console.log(`Storage: R2 | DB: Supabase | Features: Kling AI + Pexels + Smart Keywords + Job Queue + Clean Titles`);
   console.log(`FFmpeg: ${execSync('ffmpeg -version').toString().split('\n')[0]}`);
 });
