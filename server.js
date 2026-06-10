@@ -317,7 +317,7 @@ async function generateTTSChunk(text, voice, model, apiKey, outputPath) {
   fs.writeFileSync(outputPath, result.body);
 }
 
-// ── Telegram ── CORRIGIDO v6.2: sem cleanVal no texto ─────────
+// ── Telegram ── CORRIGIDO v6.3: sem cleanVal no texto ─────────
 function sendTelegram(text, buttons = null) {
   if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID) return Promise.resolve();
   return new Promise((resolve) => {
@@ -344,10 +344,10 @@ function sendTelegram(text, buttons = null) {
   });
 }
 
-// ── DALL-E ── CORRIGIDO v6.2: sem response_format ─────────────
-function dalleGenerate(prompt, apiKey, size = '1024x1024') {
+// ── DALL-E ── v6.3: usa gpt-image-1, salva b64_json direto ───
+function dalleGenerate(prompt, apiKey, size = '1024x1024', outputPath = null) {
   return new Promise((resolve, reject) => {
-    const body = JSON.stringify({ model: 'dall-e-3', prompt, n: 1, size });
+    const body = JSON.stringify({ model: 'gpt-image-1', prompt, n: 1, size });
     const req = https.request({
       hostname: 'api.openai.com', path: '/v1/images/generations', method: 'POST',
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
@@ -357,10 +357,21 @@ function dalleGenerate(prompt, apiKey, size = '1024x1024') {
       res.on('end', () => {
         try {
           const data = JSON.parse(Buffer.concat(chunks).toString());
-          if (data.error) return reject(new Error('DALL-E error: ' + data.error.message));
+          if (data.error) return reject(new Error('Image API error: ' + data.error.message));
+          // gpt-image-1 retorna b64_json
+          const b64 = data.data?.[0]?.b64_json;
+          if (b64) {
+            if (outputPath) {
+              require('fs').writeFileSync(outputPath, Buffer.from(b64, 'base64'));
+              return resolve(outputPath);
+            }
+            // Retorna data URL para compatibilidade
+            return resolve('data:image/png;base64,' + b64);
+          }
+          // Fallback: tenta url se existir
           const url = data.data?.[0]?.url;
-          if (!url) return reject(new Error('DALL-E no URL: ' + JSON.stringify(data).substring(0,200)));
-          resolve(url);
+          if (url) return resolve(url);
+          reject(new Error('Image API no data: ' + JSON.stringify(data).substring(0,200)));
         } catch(e) { reject(e); }
       });
     });
@@ -526,9 +537,8 @@ async function createTikTokProduct(jobId, data) {
       try {
         const prompt = cleanVal(data.cover_prompt) ||
           `Professional digital product cover, title: ${title}, modern minimalist style, vibrant blue gradient, clean layout, no text visible, high quality`;
-        const imgUrl = await dalleGenerate(prompt, apiKey, '1024x1024');
-        coverPath = path.join(jobDir, 'cover.jpg');
-        await downloadFile(imgUrl, coverPath);
+        coverPath = path.join(jobDir, 'cover.png');
+        await dalleGenerate(prompt, apiKey, '1024x1024', coverPath);
         console.log(`[${jobId}] Capa gerada OK`);
       } catch(e) { console.warn(`[${jobId}] Capa falhou: ${e.message}`); }
     }
@@ -648,9 +658,8 @@ async function createTikTokVideo(jobId, data) {
     for (let i = 0; i < imagePrompts.length; i++) {
       if (!apiKey) { console.warn(`[${jobId}] Sem OPENAI_API_KEY — pulando DALL-E`); break; }
       try {
-        const imgUrl  = await dalleGenerate(imagePrompts[i], apiKey, '1024x1792');
-        const imgPath = path.join(jobDir, `scene_${i}.jpg`);
-        await downloadFile(imgUrl, imgPath);
+        const imgPath = path.join(jobDir, `scene_${i}.png`);
+        await dalleGenerate(imagePrompts[i], apiKey, '1024x1792', imgPath);
         sceneImages.push(imgPath);
         console.log(`[${jobId}] Imagem ${i+1}/4 gerada`);
       } catch(e) { console.warn(`[${jobId}] Img ${i}: ${e.message}`); }
@@ -905,7 +914,7 @@ async function processJob(jobId, data) {
 
 app.get('/health', (req, res) => {
   res.json({
-    status: 'ok', version: '6.2',
+    status: 'ok', version: '6.3',
     storage: 'Cloudflare R2', db: 'Supabase',
     features: ['kling', 'pexels', 'queue', 'tiktok-shop'],
     queue: { length: jobQueue.length, processing: isProcessing },
@@ -1022,7 +1031,7 @@ app.get('/tiktok/jobs', authMiddleware, (req, res) => {
 app.post('/tiktok/test-telegram', authMiddleware, async (req, res) => {
   try {
     await sendTelegram(
-      '🤖 <b>TikTok Shop Bot ativo! v6.2</b>\n\nSeu sistema de automacao esta funcionando.\n\nAguarde as notificacoes toda segunda-feira as 7h.',
+      '🤖 <b>TikTok Shop Bot ativo! v6.3</b>\n\nSeu sistema de automacao esta funcionando.\n\nAguarde as notificacoes toda segunda-feira as 7h.',
       [[{ text: '✅ Recebi!', callback_data: 'test_ok' }]]
     );
     res.json({ ok: true, message: 'Telegram message sent' });
@@ -1032,8 +1041,8 @@ app.post('/tiktok/test-telegram', authMiddleware, async (req, res) => {
 // ═══════════════════════════════════════════════════════════════
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`FacelessAI + TikTok Shop Render Server v6.2 na porta ${PORT}`);
-  console.log(`Fixes v6.2: sendTelegram sem cleanVal | DALL-E sem response_format | OPENAI_API_KEY apenas do env`);
+  console.log(`FacelessAI + TikTok Shop Render Server v6.3 na porta ${PORT}`);
+  console.log(`Fixes v6.3: sendTelegram sem cleanVal | DALL-E sem response_format | OPENAI_API_KEY apenas do env`);
   console.log(`OPENAI_API_KEY: ${OPENAI_API_KEY ? 'CONFIGURADA (' + OPENAI_API_KEY.substring(0,15) + '...)' : 'NAO CONFIGURADA'}`);
   try { console.log(`FFmpeg: ${execSync('ffmpeg -version').toString().split('\n')[0]}`); } catch {}
 });
