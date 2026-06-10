@@ -19,10 +19,10 @@ const SUPABASE_URL    = 'https://fnzzqfffzvlffgilfpoz.supabase.co';
 const SUPABASE_KEY    = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZuenpxZmZmenZsZmZnaWxmcG96Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3OTk1OTk0NiwiZXhwIjoyMDk1NTM1OTQ2fQ.BT6WFo6HzkvrweJHXZTyDxNnwtLh2AZzbp5aTbXPgzM';
 
 // ── TikTok Shop Config ──────────────────────────────────────────
-const TELEGRAM_TOKEN   = process.env.TELEGRAM_TOKEN   || '';
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';
-const ELEVENLABS_KEY   = process.env.ELEVENLABS_KEY   || '';
-const OPENAI_API_KEY   = process.env.OPENAI_API_KEY   || '';
+const TELEGRAM_TOKEN   = process.env.TELEGRAM_TOKEN   || '8748410995:AAEb-JSEukVp50gz75FVPf6tiWuQphP4eqs';
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '1305437865';
+const ELEVENLABS_KEY   = process.env.ELEVENLABS_KEY   || 'sk_77e4c712b4c2bd6a18927ee7aff8b061b9e36f43863c4628';
+const OPENAI_API_KEY   = process.env.OPENAI_API_KEY   || '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';
 
 const jobs       = {};       // FacelessAI jobs
 const tiktokJobs = {};       // TikTok Shop jobs
