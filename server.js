@@ -24,10 +24,15 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '1305437865';
 const ELEVENLABS_KEY   = process.env.ELEVENLABS_KEY   || 'sk_77e4c712b4c2bd6a18927ee7aff8b061b9e36f43863c4628';
 const OPENAI_API_KEY   = process.env.OPENAI_API_KEY   || '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';
 
-const jobs       = {};       // FacelessAI jobs
-const tiktokJobs = {};       // TikTok Shop jobs
+const jobs       = {};
+const tiktokJobs = {};
 
-// ── v5.11: sanitiza título ──────────────────────────────────────
+// ── Helpers ─────────────────────────────────────────────────────
+// Remove = do início de strings vindas do n8n expression
+function cleanVal(val) {
+  return (val || '').toString().replace(/^=/, '').trim();
+}
+
 function sanitizeTitle(title) {
   return (title || 'FacelessAI')
     .normalize('NFC')
@@ -35,6 +40,33 @@ function sanitizeTitle(title) {
     .replace(/[\u2018\u2019\u201A\u201B\u2032\u2035']/g, '')
     .replace(/[?]/g, '')
     .trim();
+}
+
+// Texto seguro para FFmpeg drawtext
+function safeFfmpegText(text, maxLen = 40) {
+  return cleanVal(text)
+    .replace(/'/g, '')
+    .replace(/[\\:]/g, '')
+    .replace(/[^\x20-\x7E]/g, '')
+    .substring(0, maxLen)
+    .trim();
+}
+
+// Quebra texto em linhas de no máximo maxChars caracteres
+function wrapText(text, maxChars = 20) {
+  const words = text.split(' ');
+  const lines = [];
+  let current = '';
+  for (const word of words) {
+    if ((current + ' ' + word).trim().length > maxChars) {
+      if (current.trim()) lines.push(current.trim());
+      current = word;
+    } else {
+      current = (current + ' ' + word).trim();
+    }
+  }
+  if (current.trim()) lines.push(current.trim());
+  return lines;
 }
 
 // ── v5.10: Job Queue ────────────────────────────────────────────
@@ -64,7 +96,7 @@ function authMiddleware(req, res, next) {
   next();
 }
 
-// ── v5.9: Keywords ──────────────────────────────────────────────
+// ── Keywords ────────────────────────────────────────────────────
 function extractKeywords(title, language = 'en') {
   const stopwordsEN = new Set(['a','an','the','and','or','but','in','on','at','to','for','of','with','by','from','is','was','are','were','be','been','being','have','has','had','do','does','did','will','would','could','should','may','might','what','when','where','who','how','why','which','that','this','these','those','if','then','than','so','yet','both','either','whether','while','into','through','during','before','after','above','below','between','your','my','his','her','its','our','their','you','we','they','he','she','it','i','me','him','us','them','first','last','new','old','just','can','get','got','make','made','take','took','give','gave','come','came','feet','fell','happen','happened','happens','things','thing','about','also','back','even','here','still','such','take','well','much','many','really','very','never','always','every','each','most','more','some','actually','literally','basically','truly','completely','absolutely']);
   const stopwordsPT = new Set(['o','a','os','as','um','uma','uns','umas','e','ou','mas','em','no','na','nos','nas','ao','aos','de','do','da','dos','das','por','para','com','que','se','nao','mais','muito','bem','como','quando','onde','quem','qual','quais','este','esta','estes','estas','esse','essa','isso','aqui','foi','ser','estar','ter','haver','fazer','ir','vir','ver','dar','saber','ja','ainda','tambem','entao','assim','porque','pois','ate','apos','antes','depois','desde','entre','durante','contra','sobre','pelo','pela']);
@@ -108,12 +140,11 @@ function klingRequest(method, reqPath, token, body) {
 async function searchPexelsVideos(query, apiKey, count = 5) {
   return new Promise((resolve, reject) => {
     const encodedQuery = encodeURIComponent(query);
-    const options = {
+    const req = https.request({
       hostname: 'api.pexels.com',
       path: `/videos/search?query=${encodedQuery}&per_page=${count}&orientation=landscape&size=medium`,
       method: 'GET', headers: { 'Authorization': apiKey }
-    };
-    const req = https.request(options, (res) => {
+    }, (res) => {
       const chunks = [];
       res.on('data', c => chunks.push(c));
       res.on('end', () => {
@@ -209,8 +240,7 @@ async function updateSupabase(jobId, data) {
         'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'Prefer': 'return=minimal'
       },
     }, body);
-    console.log(`[${jobId}] Supabase atualizado: ${JSON.stringify(data)}`);
-  } catch(e) { console.warn(`[${jobId}] Falha ao atualizar Supabase: ${e.message}`); }
+  } catch(e) { console.warn(`[${jobId}] Falha Supabase: ${e.message}`); }
 }
 
 // ── R2 Sign ─────────────────────────────────────────────────────
@@ -233,7 +263,6 @@ function signR2Request(method, key, contentType, bodyBuffer) {
   return { host, datetime, payloadHash, authorization, path: `/${R2_BUCKET}/${key}` };
 }
 
-// ── R2 Upload MP4 (FacelessAI) ──────────────────────────────────
 async function uploadToR2(filePath, key) {
   const fileBuffer = fs.readFileSync(filePath);
   const contentType = 'video/mp4';
@@ -246,7 +275,6 @@ async function uploadToR2(filePath, key) {
   return `${R2_PUBLIC_URL}/${key}`;
 }
 
-// ── R2 Upload Genérico (TikTok — PDF, JPG, MP4) ─────────────────
 async function uploadToR2Generic(filePath, key, contentType) {
   const fileBuffer = fs.readFileSync(filePath);
   const { host, datetime, payloadHash, authorization, path: reqPath } = signR2Request('PUT', key, contentType, fileBuffer);
@@ -294,8 +322,10 @@ async function generateTTSChunk(text, voice, model, apiKey, outputPath) {
 // ── Telegram ────────────────────────────────────────────────────
 function sendTelegram(text, buttons = null) {
   if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID) return Promise.resolve();
+  // Remove = do início de qualquer valor que possa ter vindo do n8n
+  const cleanText = cleanVal(text) || text;
   return new Promise((resolve) => {
-    const payload = { chat_id: TELEGRAM_CHAT_ID, text, parse_mode: 'HTML' };
+    const payload = { chat_id: TELEGRAM_CHAT_ID, text: cleanText, parse_mode: 'HTML' };
     if (buttons) payload.reply_markup = JSON.stringify({ inline_keyboard: buttons });
     const body = JSON.stringify(payload);
     const req = https.request({
@@ -479,8 +509,7 @@ function generatePDF(product, coverImagePath, outputPath) {
     } catch {}
   }
 
-  // Fallback: entrega HTML
-  console.log('[PDF] Fallback: entregando HTML (sem conversor no container)');
+  console.log('[PDF] Fallback: entregando HTML');
   return htmlPath;
 }
 
@@ -490,28 +519,28 @@ async function createTikTokProduct(jobId, data) {
   fs.mkdirSync(jobDir, { recursive: true });
   try {
     tiktokJobs[jobId].status = 'processing';
-    const apiKey  = OPENAI_API_KEY || data.openai_api_key || '';
+    const apiKey = OPENAI_API_KEY || data.openai_api_key || '';
 
-    // 1. Capa DALL-E
+    // Limpa = de todos os campos de texto
+    const title = cleanVal(data.title) || 'Digital Product';
+
     tiktokJobs[jobId].step = 'generating_cover';
     let coverPath = null;
     if (apiKey) {
       try {
-        const prompt = data.cover_prompt ||
-          `Professional digital product cover, title: ${data.title}, modern minimalist style, vibrant blue gradient, clean layout, no text visible, high quality`;
+        const prompt = cleanVal(data.cover_prompt) ||
+          `Professional digital product cover, title: ${title}, modern minimalist style, vibrant blue gradient, clean layout, no text visible, high quality`;
         const imgUrl = await dalleGenerate(prompt, apiKey, '1024x1024');
         coverPath = path.join(jobDir, 'cover.jpg');
         await downloadFile(imgUrl, coverPath);
       } catch(e) { console.warn(`[${jobId}] Capa falhou: ${e.message}`); }
     }
 
-    // 2. PDF / HTML
     tiktokJobs[jobId].step = 'generating_pdf';
     const pdfPath = path.join(jobDir, 'product.pdf');
-    const actualOutput = generatePDF(data, coverPath, pdfPath);
+    const actualOutput = generatePDF({ ...data, title }, coverPath, pdfPath);
     const isHtml = actualOutput.endsWith('.html');
 
-    // 3. Mockups com FFmpeg
     tiktokJobs[jobId].step = 'generating_mockups';
     const mockupUrls = {};
     if (coverPath && fs.existsSync(coverPath)) {
@@ -527,7 +556,6 @@ async function createTikTokProduct(jobId, data) {
       } catch(e) { console.warn(`[${jobId}] Mockup phone: ${e.message}`); }
     }
 
-    // 4. Upload
     tiktokJobs[jobId].step = 'uploading';
     let coverUrl = '', productUrl = '';
     if (coverPath && fs.existsSync(coverPath))
@@ -544,13 +572,15 @@ async function createTikTokProduct(jobId, data) {
     tiktokJobs[jobId].cover_url   = coverUrl;
     tiktokJobs[jobId].mockup_urls = mockupUrls;
 
+    const tiktokTitle = cleanVal(data.tiktok_title) || title;
+
     await sendTelegram(
       `✅ <b>Produto criado — Revisao necessaria!</b>\n\n` +
-      `📄 <b>${data.title || 'Produto Digital'}</b>\n` +
+      `📄 <b>${title}</b>\n` +
       (productUrl ? `\n📎 <a href="${productUrl}">Ver Produto</a>` : '') +
       (coverUrl   ? `\n🖼 <a href="${coverUrl}">Ver Capa</a>` : '') +
       (mockupUrls.phone ? `\n📱 <a href="${mockupUrls.phone}">Mockup Phone</a>` : '') +
-      `\n\nTitulo TikTok:\n<i>${data.tiktok_title || data.title}</i>\n\nAprove para criar os videos:`,
+      `\n\nTitulo TikTok:\n<i>${tiktokTitle}</i>\n\nAprove para criar os videos:`,
       [[{ text: '✅ Aprovar — Criar videos', callback_data: `approve_${jobId}` }],
        [{ text: '❌ Refazer produto',         callback_data: `redo_product_${jobId}` }]]
     );
@@ -570,29 +600,38 @@ async function createTikTokVideo(jobId, data) {
   fs.mkdirSync(jobDir, { recursive: true });
   try {
     tiktokJobs[jobId].status = 'processing';
-    const {
-      product_title = 'Digital Product',
-      hook          = 'This changes everything',
-      benefits      = [],
-      cta           = 'Get yours now — link in bio!',
-      narration     = '',
-      pexels_query  = 'productivity workspace',
-      angle         = 0,
-      elevenlabs_voice_id = '21m00Tcm4TlvDq8ikWAM'
-    } = data;
 
-    const apiKey   = OPENAI_API_KEY || data.openai_api_key || '';
+    // ── Limpa todos os valores que podem vir com = do n8n ──────
+    const product_title = cleanVal(data.product_title) || 'Digital Product';
+    const hook          = cleanVal(data.hook)          || 'This will change your life';
+    const cta           = cleanVal(data.cta)           || 'Get yours now — link in bio!';
+    const narration     = cleanVal(data.narration)     || '';
+    const pexels_query  = cleanVal(data.pexels_query)  || 'productivity workspace';
+    const cover_url     = cleanVal(data.cover_url)     || '';
+    const angle         = parseInt(data.angle) || 0;
+    const elevenlabs_voice_id = data.elevenlabs_voice_id || '21m00Tcm4TlvDq8ikWAM';
+
+    // Benefits pode ser array ou string JSON
+    let benefits = [];
+    try {
+      if (Array.isArray(data.benefits)) benefits = data.benefits;
+      else if (data.benefits) benefits = JSON.parse(cleanVal(data.benefits));
+    } catch {}
+
+    const apiKey    = OPENAI_API_KEY || data.openai_api_key || '';
     const pexelsKey = data.pexels_api_key || process.env.PEXELS_API_KEY || '';
-    const elKey    = ELEVENLABS_KEY || data.elevenlabs_key || '';
+    const elKey     = ELEVENLABS_KEY || data.elevenlabs_key || '';
     const W = 1080, H = 1920;
+
+    console.log(`[${jobId}] Criando video: "${product_title}" | angulo ${angle}`);
 
     // 1. Narração
     tiktokJobs[jobId].step = 'generating_audio';
     const audioPath = path.join(jobDir, 'narration.mp3');
-    const narText   = narration ||
+    const narText = narration ||
       `${hook}. Introducing ${product_title}. ${benefits.slice(0,3).join('. ')}. ${cta}`;
 
-    if (elKey)      await elevenLabsTTS(narText, elKey, audioPath, elevenlabs_voice_id);
+    if (elKey)       await elevenLabsTTS(narText, elKey, audioPath, elevenlabs_voice_id);
     else if (apiKey) await openaiTTS(narText, apiKey, audioPath);
     else throw new Error('Nenhuma API de TTS configurada');
 
@@ -601,6 +640,7 @@ async function createTikTokVideo(jobId, data) {
       const d = execSync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${audioPath}"`, { timeout: 15000 }).toString().trim();
       audioDuration = parseFloat(d) || 45;
     } catch {}
+    console.log(`[${jobId}] Audio: ${audioDuration.toFixed(1)}s`);
 
     // 2. Imagens DALL-E
     tiktokJobs[jobId].step = 'generating_images';
@@ -612,13 +652,13 @@ async function createTikTokVideo(jobId, data) {
     ];
     const sceneImages = [];
     for (let i = 0; i < imagePrompts.length; i++) {
-      tiktokJobs[jobId].step = `generating_image_${i+1}`;
       if (!apiKey) break;
       try {
         const imgUrl  = await dalleGenerate(imagePrompts[i], apiKey, '1024x1792');
         const imgPath = path.join(jobDir, `scene_${i}.jpg`);
         await downloadFile(imgUrl, imgPath);
         sceneImages.push(imgPath);
+        console.log(`[${jobId}] Imagem ${i+1}/4 gerada`);
       } catch(e) { console.warn(`[${jobId}] Img ${i}: ${e.message}`); }
     }
 
@@ -635,17 +675,19 @@ async function createTikTokVideo(jobId, data) {
       } catch(e) { console.warn(`[${jobId}] Pexels: ${e.message}`); }
     }
 
-    // 4. Clips
+    // 4. Cria clips
     tiktokJobs[jobId].step = 'creating_clips';
     const sceneDurations = [4, 12, 12, 10, Math.max(5, audioDuration - 38)];
     const sceneFiles     = [...sceneImages];
 
-    // Fallback colorido se não tem imagens suficientes
     const fallbackColors = ['2962ff','ff6b35','1a237e','ff5722'];
     while (sceneFiles.length < 4) {
       const fb = path.join(jobDir, `fb_${sceneFiles.length}.jpg`);
       const c  = fallbackColors[sceneFiles.length % fallbackColors.length];
-      try { execSync(`ffmpeg -y -f lavfi -i "color=c=0x${c}:size=${W}x${H}:duration=1" -frames:v 1 "${fb}"`, { timeout: 10000 }); sceneFiles.push(fb); } catch { break; }
+      try {
+        execSync(`ffmpeg -y -f lavfi -i "color=c=0x${c}:size=${W}x${H}:duration=1" -frames:v 1 "${fb}"`, { timeout: 10000 });
+        sceneFiles.push(fb);
+      } catch { break; }
     }
 
     const clipPaths = [];
@@ -653,7 +695,12 @@ async function createTikTokVideo(jobId, data) {
       const clipPath = path.join(jobDir, `clip_${i}.mp4`);
       const dur = sceneDurations[i];
       try {
-        execSync(`ffmpeg -y -loop 1 -i "${sceneFiles[i]}" -vf "scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1" -t ${dur} -r 30 -c:v libx264 -preset fast -pix_fmt yuv420p "${clipPath}"`, { timeout: 90000 });
+        execSync(
+          `ffmpeg -y -loop 1 -i "${sceneFiles[i]}" ` +
+          `-vf "scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1" ` +
+          `-t ${dur} -r 30 -c:v libx264 -preset fast -pix_fmt yuv420p "${clipPath}"`,
+          { timeout: 90000 }
+        );
         clipPaths.push(clipPath);
       } catch(e) { console.warn(`[${jobId}] Clip ${i}: ${e.message}`); }
     }
@@ -661,34 +708,58 @@ async function createTikTokVideo(jobId, data) {
     if (brollPath && fs.existsSync(brollPath)) {
       const brollNorm = path.join(jobDir, 'broll_norm.mp4');
       try {
-        execSync(`ffmpeg -y -i "${brollPath}" -vf "scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1" -t 10 -r 30 -c:v libx264 -preset ultrafast -an "${brollNorm}"`, { timeout: 120000 });
+        execSync(
+          `ffmpeg -y -i "${brollPath}" ` +
+          `-vf "scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setsar=1" ` +
+          `-t 10 -r 30 -c:v libx264 -preset ultrafast -an "${brollNorm}"`,
+          { timeout: 120000 }
+        );
         clipPaths.splice(3, 0, brollNorm);
-      } catch(e) { console.warn(`[${jobId}] B-roll norm: ${e.message}`); }
+      } catch(e) { console.warn(`[${jobId}] B-roll: ${e.message}`); }
     }
 
     if (clipPaths.length === 0) throw new Error('Nenhum clip gerado');
 
-    // 5. Text overlays
+    // 5. Text overlays com quebra de linha correta
     tiktokJobs[jobId].step = 'adding_overlays';
     const overlayClips = [...clipPaths];
 
-    const addOverlay = (inputPath, outputPath, text, y, color) => {
-      const safeText = text.replace(/'/g, '').replace(/[\\:]/g, '').substring(0, 55);
-      const lines = safeText.match(/.{1,22}/g) || [safeText];
+    const addOverlay = (inputPath, outputPath, text, yBase, color) => {
+      const safeText = safeFfmpegText(text, 45);
+      const lines    = wrapText(safeText, 18); // max 18 chars por linha
+      const fontfile = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf';
+      const fontSize = 65;
+      const lineH    = 80;
+
       const drawtext = lines.map((line, i) =>
-        `drawtext=text='${line}':fontsize=70:fontcolor=white:x=(w-text_w)/2:y=${y}+${i*88}:fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:box=1:boxcolor=${color}@0.88:boxborderw=18`
+        `drawtext=text='${line}':fontsize=${fontSize}:fontcolor=white:` +
+        `x=(w-text_w)/2:y=${yBase}+${i * lineH}:` +
+        `fontfile=${fontfile}:box=1:boxcolor=${color}@0.88:boxborderw=15`
       ).join(',');
-      execSync(`ffmpeg -y -i "${inputPath}" -vf "${drawtext}" -c:v libx264 -preset fast "${outputPath}"`, { timeout: 60000 });
+
+      execSync(
+        `ffmpeg -y -i "${inputPath}" -vf "${drawtext}" -c:v libx264 -preset fast "${outputPath}"`,
+        { timeout: 60000 }
+      );
     };
 
+    // Hook overlay — cena 0
     if (clipPaths[0] && fs.existsSync(clipPaths[0])) {
       const out = path.join(jobDir, 'hook_ov.mp4');
-      try { addOverlay(clipPaths[0], out, hook, 'h*0.43', '0x2962ff'); overlayClips[0] = out; } catch(e) { console.warn(`[${jobId}] Hook overlay: ${e.message}`); }
+      try {
+        addOverlay(clipPaths[0], out, hook, 'h*0.40', '0x2962ff');
+        overlayClips[0] = out;
+      } catch(e) { console.warn(`[${jobId}] Hook overlay: ${e.message}`); }
     }
+
+    // CTA overlay — última cena
     const last = overlayClips.length - 1;
     if (overlayClips[last] && fs.existsSync(overlayClips[last])) {
       const out = path.join(jobDir, 'cta_ov.mp4');
-      try { addOverlay(overlayClips[last], out, cta, 'h*0.40', '0xff6b35'); overlayClips[last] = out; } catch(e) { console.warn(`[${jobId}] CTA overlay: ${e.message}`); }
+      try {
+        addOverlay(overlayClips[last], out, cta, 'h*0.38', '0xff6b35');
+        overlayClips[last] = out;
+      } catch(e) { console.warn(`[${jobId}] CTA overlay: ${e.message}`); }
     }
 
     // 6. Concat + merge áudio
@@ -697,10 +768,16 @@ async function createTikTokVideo(jobId, data) {
     fs.writeFileSync(concatTxt, overlayClips.filter(p => fs.existsSync(p)).map(p => `file '${p}'`).join('\n'));
 
     const silentMp4 = path.join(jobDir, 'silent.mp4');
-    execSync(`ffmpeg -y -f concat -safe 0 -i "${concatTxt}" -c:v libx264 -preset fast -pix_fmt yuv420p "${silentMp4}"`, { timeout: 300000 });
+    execSync(
+      `ffmpeg -y -f concat -safe 0 -i "${concatTxt}" -c:v libx264 -preset fast -pix_fmt yuv420p "${silentMp4}"`,
+      { timeout: 300000 }
+    );
 
     const finalMp4 = path.join(jobDir, 'final.mp4');
-    execSync(`ffmpeg -y -i "${silentMp4}" -i "${audioPath}" -map 0:v -map 1:a -c:v copy -c:a aac -b:a 128k -shortest "${finalMp4}"`, { timeout: 120000 });
+    execSync(
+      `ffmpeg -y -i "${silentMp4}" -i "${audioPath}" -map 0:v -map 1:a -c:v copy -c:a aac -b:a 128k -shortest "${finalMp4}"`,
+      { timeout: 120000 }
+    );
 
     // 7. Upload R2
     tiktokJobs[jobId].step = 'uploading';
@@ -713,12 +790,17 @@ async function createTikTokVideo(jobId, data) {
     await sendTelegram(
       `🎬 <b>Video TikTok pronto!</b>\n\n` +
       `📦 ${product_title}\n` +
-      `🎯 Angulo ${angle + 1}/3\n` +
+      `🎯 Angulo ${angle + 1}\n` +
       `🔗 <a href="${videoUrl}">Download do video</a>\n\n` +
       `Poste no TikTok quando estiver pronto!`,
-      [[{ text: '✅ Postado!', callback_data: `posted_${jobId}` },
-        { text: '❌ Refazer',  callback_data: `redo_${jobId}` }]]
+      [[
+        { text: '✅ Postado!', callback_data: `posted_${jobId}` },
+        { text: '❌ Refazer',  callback_data: `redo_${jobId}` }
+      ]]
     );
+
+    console.log(`[${jobId}] Video concluido: ${videoUrl}`);
+
   } catch(error) {
     console.error(`[TikTok Vid ${jobId}]`, error.message);
     tiktokJobs[jobId].status = 'failed';
@@ -779,7 +861,6 @@ async function processJob(jobId, data) {
       jobs[jobId].progress = 'Buscando clips no Pexels...';
       const lang = language.startsWith('pt') ? 'pt' : 'en';
       const query = pexels_query || extractKeywords(video_title, lang);
-      console.log(`[${jobId}] Pexels query: "${query}"`);
       const pexelsUrls = await searchPexelsVideos(query, pexels_api_key, 5);
       clipUrls = [...clipUrls, ...pexelsUrls];
       if (pexelsUrls.length === 0) {
@@ -848,12 +929,12 @@ async function processJob(jobId, data) {
 }
 
 // ════════════════════════════════════════════════════════════════
-// ROTAS — FacelessAI (originais, sem alteração)
+// ROTAS — FacelessAI
 // ════════════════════════════════════════════════════════════════
 
 app.get('/health', (req, res) => {
   res.json({
-    status: 'ok', version: '6.0',
+    status: 'ok', version: '6.1',
     storage: 'Cloudflare R2', db: 'Supabase',
     features: ['kling', 'pexels', 'queue', 'tiktok-shop'],
     queue: { length: jobQueue.length, processing: isProcessing },
@@ -934,14 +1015,14 @@ app.get('/queue', authMiddleware, (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════════════
-// ROTAS — TikTok Shop (novas)
+// ROTAS — TikTok Shop
 // ════════════════════════════════════════════════════════════════
 
 app.post('/tiktok/create-product', authMiddleware, (req, res) => {
   const data = req.body;
   if (!data?.title) return res.status(400).json({ error: 'title required' });
   const jobId = data.job_id || `prod_${Date.now()}_${Math.random().toString(36).substr(2,6)}`;
-  tiktokJobs[jobId] = { job_id: jobId, type: 'product', status: 'queued', step: 'starting', product_title: data.title, created_at: new Date().toISOString() };
+  tiktokJobs[jobId] = { job_id: jobId, type: 'product', status: 'queued', step: 'starting', product_title: cleanVal(data.title), created_at: new Date().toISOString() };
   createTikTokProduct(jobId, data);
   res.json({ job_id: jobId, status: 'queued', message: 'Product creation started' });
 });
@@ -950,7 +1031,7 @@ app.post('/tiktok/create-video', authMiddleware, (req, res) => {
   const data = req.body;
   if (!data?.product_title) return res.status(400).json({ error: 'product_title required' });
   const jobId = data.job_id || `vid_${Date.now()}_${Math.random().toString(36).substr(2,6)}`;
-  tiktokJobs[jobId] = { job_id: jobId, type: 'video', status: 'queued', step: 'starting', product_title: data.product_title, angle: data.angle || 0, created_at: new Date().toISOString() };
+  tiktokJobs[jobId] = { job_id: jobId, type: 'video', status: 'queued', step: 'starting', product_title: cleanVal(data.product_title), angle: parseInt(data.angle) || 0, created_at: new Date().toISOString() };
   createTikTokVideo(jobId, data);
   res.json({ job_id: jobId, status: 'queued', message: 'Video creation started' });
 });
@@ -969,7 +1050,7 @@ app.get('/tiktok/jobs', authMiddleware, (req, res) => {
 app.post('/tiktok/test-telegram', authMiddleware, async (req, res) => {
   try {
     await sendTelegram(
-      '🤖 <b>TikTok Shop Bot ativo!</b>\n\nSeu sistema de automacao esta funcionando.\n\nAguarde as notificacoes toda segunda-feira as 7h.',
+      '🤖 <b>TikTok Shop Bot ativo! v6.1</b>\n\nSeu sistema de automacao esta funcionando.\n\nAguarde as notificacoes toda segunda-feira as 7h.',
       [[{ text: '✅ Recebi!', callback_data: 'test_ok' }]]
     );
     res.json({ ok: true, message: 'Telegram message sent' });
@@ -979,7 +1060,7 @@ app.post('/tiktok/test-telegram', authMiddleware, async (req, res) => {
 // ════════════════════════════════════════════════════════════════
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`FacelessAI + TikTok Shop Render Server v6.0 na porta ${PORT}`);
-  console.log(`Features: Kling AI | Pexels | Job Queue | TikTok Products | TikTok Videos | Telegram`);
+  console.log(`FacelessAI + TikTok Shop Render Server v6.1 na porta ${PORT}`);
+  console.log(`Fixes v6.1: cleanVal() remove = do n8n | wrapText() corrige texto quebrado`);
   try { console.log(`FFmpeg: ${execSync('ffmpeg -version').toString().split('\n')[0]}`); } catch {}
 });
