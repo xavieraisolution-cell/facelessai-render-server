@@ -18,17 +18,17 @@ const R2_PUBLIC_URL   = 'https://pub-5a163e6e865546d38356eb3df280caaa.r2.dev';
 const SUPABASE_URL    = 'https://fnzzqfffzvlffgilfpoz.supabase.co';
 const SUPABASE_KEY    = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZuenpxZmZmenZsZmZnaWxmcG96Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3OTk1OTk0NiwiZXhwIjoyMDk1NTM1OTQ2fQ.BT6WFo6HzkvrweJHXZTyDxNnwtLh2AZzbp5aTbXPgzM';
 
-// ── TikTok Shop Config ──────────────────────────────────────────
+// ── TikTok Shop Config ─────────────────────────────────────────
+// OPENAI_API_KEY vem APENAS do environment do Render (nunca hardcoded)
 const TELEGRAM_TOKEN   = process.env.TELEGRAM_TOKEN   || '8748410995:AAEb-JSEukVp50gz75FVPf6tiWuQphP4eqs';
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '1305437865';
 const ELEVENLABS_KEY   = process.env.ELEVENLABS_KEY   || 'sk_77e4c712b4c2bd6a18927ee7aff8b061b9e36f43863c4628';
-const OPENAI_API_KEY   = process.env.OPENAI_API_KEY   || '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';
+const OPENAI_API_KEY   = process.env.OPENAI_API_KEY   || '';
 
 const jobs       = {};
 const tiktokJobs = {};
 
-// ── Helpers ─────────────────────────────────────────────────────
-// Remove = do início de strings vindas do n8n expression
+// ── Helpers ────────────────────────────────────────────────────
 function cleanVal(val) {
   return (val || '').toString().replace(/^=/, '').trim();
 }
@@ -42,7 +42,6 @@ function sanitizeTitle(title) {
     .trim();
 }
 
-// Texto seguro para FFmpeg drawtext
 function safeFfmpegText(text, maxLen = 40) {
   return cleanVal(text)
     .replace(/'/g, '')
@@ -52,7 +51,6 @@ function safeFfmpegText(text, maxLen = 40) {
     .trim();
 }
 
-// Quebra texto em linhas de no máximo maxChars caracteres
 function wrapText(text, maxChars = 20) {
   const words = text.split(' ');
   const lines = [];
@@ -69,7 +67,7 @@ function wrapText(text, maxChars = 20) {
   return lines;
 }
 
-// ── v5.10: Job Queue ────────────────────────────────────────────
+// ── Job Queue ──────────────────────────────────────────────────
 const jobQueue = [];
 let isProcessing = false;
 
@@ -89,14 +87,14 @@ async function processQueue() {
   processQueue();
 }
 
-// ── Auth ────────────────────────────────────────────────────────
+// ── Auth ───────────────────────────────────────────────────────
 function authMiddleware(req, res, next) {
   const auth = req.headers['authorization'] || '';
   if (auth !== `Bearer ${AUTH_KEY}`) return res.status(401).json({ error: 'Unauthorized' });
   next();
 }
 
-// ── Keywords ────────────────────────────────────────────────────
+// ── Keywords ───────────────────────────────────────────────────
 function extractKeywords(title, language = 'en') {
   const stopwordsEN = new Set(['a','an','the','and','or','but','in','on','at','to','for','of','with','by','from','is','was','are','were','be','been','being','have','has','had','do','does','did','will','would','could','should','may','might','what','when','where','who','how','why','which','that','this','these','those','if','then','than','so','yet','both','either','whether','while','into','through','during','before','after','above','below','between','your','my','his','her','its','our','their','you','we','they','he','she','it','i','me','him','us','them','first','last','new','old','just','can','get','got','make','made','take','took','give','gave','come','came','feet','fell','happen','happened','happens','things','thing','about','also','back','even','here','still','such','take','well','much','many','really','very','never','always','every','each','most','more','some','actually','literally','basically','truly','completely','absolutely']);
   const stopwordsPT = new Set(['o','a','os','as','um','uma','uns','umas','e','ou','mas','em','no','na','nos','nas','ao','aos','de','do','da','dos','das','por','para','com','que','se','nao','mais','muito','bem','como','quando','onde','quem','qual','quais','este','esta','estes','estas','esse','essa','isso','aqui','foi','ser','estar','ter','haver','fazer','ir','vir','ver','dar','saber','ja','ainda','tambem','entao','assim','porque','pois','ate','apos','antes','depois','desde','entre','durante','contra','sobre','pelo','pela']);
@@ -105,7 +103,7 @@ function extractKeywords(title, language = 'en') {
   return words.slice(0, 3).join(' ') || title.split(' ').slice(0, 2).join(' ');
 }
 
-// ── Kling JWT ───────────────────────────────────────────────────
+// ── Kling JWT ──────────────────────────────────────────────────
 function generateKlingJWT(ak, sk) {
   function base64url(obj) {
     return Buffer.from(JSON.stringify(obj)).toString('base64').replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
@@ -136,7 +134,7 @@ function klingRequest(method, reqPath, token, body) {
   });
 }
 
-// ── Pexels Landscape (FacelessAI) ──────────────────────────────
+// ── Pexels Landscape ──────────────────────────────────────────
 async function searchPexelsVideos(query, apiKey, count = 5) {
   return new Promise((resolve, reject) => {
     const encodedQuery = encodeURIComponent(query);
@@ -166,7 +164,7 @@ async function searchPexelsVideos(query, apiKey, count = 5) {
   });
 }
 
-// ── Pexels Portrait (TikTok) ────────────────────────────────────
+// ── Pexels Portrait ────────────────────────────────────────────
 function searchPexelsPortrait(query, apiKey, count = 3) {
   return new Promise((resolve) => {
     const encodedQuery = encodeURIComponent(query);
@@ -196,7 +194,7 @@ function searchPexelsPortrait(query, apiKey, count = 3) {
   });
 }
 
-// ── Download ────────────────────────────────────────────────────
+// ── Download ───────────────────────────────────────────────────
 function downloadFile(url, dest) {
   return new Promise((resolve, reject) => {
     const file = fs.createWriteStream(dest);
@@ -212,7 +210,7 @@ function downloadFile(url, dest) {
   });
 }
 
-// ── HTTPS Helper ────────────────────────────────────────────────
+// ── HTTPS Helper ───────────────────────────────────────────────
 function httpsRequest(options, body) {
   return new Promise((resolve, reject) => {
     const req = https.request(options, (res) => {
@@ -226,7 +224,7 @@ function httpsRequest(options, body) {
   });
 }
 
-// ── Supabase ────────────────────────────────────────────────────
+// ── Supabase ───────────────────────────────────────────────────
 async function updateSupabase(jobId, data) {
   try {
     const body = JSON.stringify(data);
@@ -243,7 +241,7 @@ async function updateSupabase(jobId, data) {
   } catch(e) { console.warn(`[${jobId}] Falha Supabase: ${e.message}`); }
 }
 
-// ── R2 Sign ─────────────────────────────────────────────────────
+// ── R2 Sign ────────────────────────────────────────────────────
 function signR2Request(method, key, contentType, bodyBuffer) {
   const now = new Date();
   const date = now.toISOString().replace(/[:-]|\.\d{3}/g,'').slice(0,8);
@@ -286,7 +284,7 @@ async function uploadToR2Generic(filePath, key, contentType) {
   return `${R2_PUBLIC_URL}/${key}`;
 }
 
-// ── TTS Chunks (FacelessAI) ─────────────────────────────────────
+// ── TTS Chunks ────────────────────────────────────────────────
 function splitIntoChunks(text, maxChars = 4000) {
   const chunks = [];
   const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
@@ -319,13 +317,11 @@ async function generateTTSChunk(text, voice, model, apiKey, outputPath) {
   fs.writeFileSync(outputPath, result.body);
 }
 
-// ── Telegram ────────────────────────────────────────────────────
+// ── Telegram ── CORRIGIDO v6.2: sem cleanVal no texto ─────────
 function sendTelegram(text, buttons = null) {
   if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID) return Promise.resolve();
-  // Remove = do início de qualquer valor que possa ter vindo do n8n
-  const cleanText = cleanVal(text) || text;
   return new Promise((resolve) => {
-    const payload = { chat_id: TELEGRAM_CHAT_ID, text: cleanText, parse_mode: 'HTML' };
+    const payload = { chat_id: TELEGRAM_CHAT_ID, text: String(text), parse_mode: 'HTML' };
     if (buttons) payload.reply_markup = JSON.stringify({ inline_keyboard: buttons });
     const body = JSON.stringify(payload);
     const req = https.request({
@@ -333,17 +329,25 @@ function sendTelegram(text, buttons = null) {
       path: `/bot${TELEGRAM_TOKEN}/sendMessage`,
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
-    }, (res) => { res.resume(); resolve(); });
-    req.on('error', () => resolve());
+    }, (res) => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => {
+        const resp = Buffer.concat(chunks).toString();
+        if (!resp.includes('"ok":true')) console.warn('[Telegram] Erro:', resp.substring(0,200));
+        resolve();
+      });
+    });
+    req.on('error', (e) => { console.warn('[Telegram] Conexao falhou:', e.message); resolve(); });
     req.write(body);
     req.end();
   });
 }
 
-// ── DALL-E ──────────────────────────────────────────────────────
+// ── DALL-E ── CORRIGIDO v6.2: sem response_format ─────────────
 function dalleGenerate(prompt, apiKey, size = '1024x1024') {
   return new Promise((resolve, reject) => {
-    const body = JSON.stringify({ model: 'dall-e-3', prompt, n: 1, size, response_format: 'url' });
+    const body = JSON.stringify({ model: 'dall-e-3', prompt, n: 1, size });
     const req = https.request({
       hostname: 'api.openai.com', path: '/v1/images/generations', method: 'POST',
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
@@ -353,8 +357,10 @@ function dalleGenerate(prompt, apiKey, size = '1024x1024') {
       res.on('end', () => {
         try {
           const data = JSON.parse(Buffer.concat(chunks).toString());
-          if (!data.data?.[0]?.url) return reject(new Error('DALL-E no URL: ' + JSON.stringify(data)));
-          resolve(data.data[0].url);
+          if (data.error) return reject(new Error('DALL-E error: ' + data.error.message));
+          const url = data.data?.[0]?.url;
+          if (!url) return reject(new Error('DALL-E no URL: ' + JSON.stringify(data).substring(0,200)));
+          resolve(url);
         } catch(e) { reject(e); }
       });
     });
@@ -364,7 +370,7 @@ function dalleGenerate(prompt, apiKey, size = '1024x1024') {
   });
 }
 
-// ── OpenAI TTS ──────────────────────────────────────────────────
+// ── OpenAI TTS ────────────────────────────────────────────────
 function openaiTTS(text, apiKey, outputPath, voice = 'nova') {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({ model: 'tts-1', input: text, voice, response_format: 'mp3' });
@@ -388,7 +394,7 @@ function openaiTTS(text, apiKey, outputPath, voice = 'nova') {
   });
 }
 
-// ── ElevenLabs TTS ──────────────────────────────────────────────
+// ── ElevenLabs TTS ────────────────────────────────────────────
 function elevenLabsTTS(text, apiKey, outputPath, voiceId = '21m00Tcm4TlvDq8ikWAM') {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({ text, model_id: 'eleven_multilingual_v2', voice_settings: { stability: 0.5, similarity_boost: 0.75 } });
@@ -414,12 +420,11 @@ function elevenLabsTTS(text, apiKey, outputPath, voiceId = '21m00Tcm4TlvDq8ikWAM
   });
 }
 
-// ── PDF / HTML Generator ────────────────────────────────────────
+// ── PDF / HTML Generator ───────────────────────────────────────
 function generateProductHTML(product, coverImagePath) {
   const coverBase64 = coverImagePath && fs.existsSync(coverImagePath)
     ? `data:image/jpeg;base64,${fs.readFileSync(coverImagePath).toString('base64')}`
     : '';
-
   const sections = (product.sections || []).map((section, i) => {
     const bullets = (section.bullets || []).map(b => `<li>${b}</li>`).join('');
     const quote   = section.quote ? `<div class="quote">"${section.quote}"</div>` : '';
@@ -432,7 +437,6 @@ function generateProductHTML(product, coverImagePath) {
       ${quote}
     </div>`;
   }).join('');
-
   const checklist = product.checklist ? `<div class="checklist-page">
     <h2>${product.checklist.title || 'Checklist'}</h2>
     <hr class="divider">
@@ -440,7 +444,6 @@ function generateProductHTML(product, coverImagePath) {
       `<div class="check-item"><div class="checkbox"></div><span>${item}</span></div>`
     ).join('')}
   </div>` : '';
-
   return `<!DOCTYPE html><html><head><meta charset="UTF-8">
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
@@ -490,39 +493,32 @@ function generatePDF(product, coverImagePath, outputPath) {
   const html = generateProductHTML(product, coverImagePath);
   const htmlPath = outputPath.replace(/\.pdf$/, '.html');
   fs.writeFileSync(htmlPath, html);
-
   const cmds = [
     `wkhtmltopdf --page-size A4 --margin-top 0 --margin-bottom 0 --margin-left 0 --margin-right 0 --enable-local-file-access "${htmlPath}" "${outputPath}"`,
     `chromium-browser --headless --no-sandbox --disable-gpu --print-to-pdf="${outputPath}" "file://${htmlPath}"`,
     `google-chrome --headless --no-sandbox --disable-gpu --print-to-pdf="${outputPath}" "file://${htmlPath}"`,
     `chromium --headless --no-sandbox --disable-gpu --print-to-pdf="${outputPath}" "file://${htmlPath}"`
   ];
-
   for (const cmd of cmds) {
     try {
       execSync(cmd, { timeout: 30000, stdio: 'ignore' });
       if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 2000) {
-        console.log(`[PDF] Gerado com: ${cmd.split(' ')[0]}`);
         try { fs.unlinkSync(htmlPath); } catch {}
         return outputPath;
       }
     } catch {}
   }
-
-  console.log('[PDF] Fallback: entregando HTML');
   return htmlPath;
 }
 
-// ── TikTok Product Creator ──────────────────────────────────────
+// ── TikTok Product Creator ─────────────────────────────────────
 async function createTikTokProduct(jobId, data) {
   const jobDir = `/tmp/tikprod_${jobId}`;
   fs.mkdirSync(jobDir, { recursive: true });
   try {
     tiktokJobs[jobId].status = 'processing';
     const apiKey = OPENAI_API_KEY || data.openai_api_key || '';
-
-    // Limpa = de todos os campos de texto
-    const title = cleanVal(data.title) || 'Digital Product';
+    const title  = cleanVal(data.title) || 'Digital Product';
 
     tiktokJobs[jobId].step = 'generating_cover';
     let coverPath = null;
@@ -533,13 +529,14 @@ async function createTikTokProduct(jobId, data) {
         const imgUrl = await dalleGenerate(prompt, apiKey, '1024x1024');
         coverPath = path.join(jobDir, 'cover.jpg');
         await downloadFile(imgUrl, coverPath);
+        console.log(`[${jobId}] Capa gerada OK`);
       } catch(e) { console.warn(`[${jobId}] Capa falhou: ${e.message}`); }
     }
 
     tiktokJobs[jobId].step = 'generating_pdf';
-    const pdfPath = path.join(jobDir, 'product.pdf');
+    const pdfPath    = path.join(jobDir, 'product.pdf');
     const actualOutput = generatePDF({ ...data, title }, coverPath, pdfPath);
-    const isHtml = actualOutput.endsWith('.html');
+    const isHtml     = actualOutput.endsWith('.html');
 
     tiktokJobs[jobId].step = 'generating_mockups';
     const mockupUrls = {};
@@ -594,24 +591,21 @@ async function createTikTokProduct(jobId, data) {
   }
 }
 
-// ── TikTok Video Creator ────────────────────────────────────────
+// ── TikTok Video Creator ───────────────────────────────────────
 async function createTikTokVideo(jobId, data) {
   const jobDir = `/tmp/tiktvid_${jobId}`;
   fs.mkdirSync(jobDir, { recursive: true });
   try {
     tiktokJobs[jobId].status = 'processing';
 
-    // ── Limpa todos os valores que podem vir com = do n8n ──────
-    const product_title = cleanVal(data.product_title) || 'Digital Product';
-    const hook          = cleanVal(data.hook)          || 'This will change your life';
-    const cta           = cleanVal(data.cta)           || 'Get yours now — link in bio!';
-    const narration     = cleanVal(data.narration)     || '';
-    const pexels_query  = cleanVal(data.pexels_query)  || 'productivity workspace';
-    const cover_url     = cleanVal(data.cover_url)     || '';
-    const angle         = parseInt(data.angle) || 0;
+    const product_title       = cleanVal(data.product_title) || 'Digital Product';
+    const hook                = cleanVal(data.hook)          || 'This will change your life';
+    const cta                 = cleanVal(data.cta)           || 'Get yours now — link in bio!';
+    const narration           = cleanVal(data.narration)     || '';
+    const pexels_query        = cleanVal(data.pexels_query)  || 'productivity workspace';
+    const angle               = parseInt(data.angle) || 0;
     const elevenlabs_voice_id = data.elevenlabs_voice_id || '21m00Tcm4TlvDq8ikWAM';
 
-    // Benefits pode ser array ou string JSON
     let benefits = [];
     try {
       if (Array.isArray(data.benefits)) benefits = data.benefits;
@@ -623,7 +617,7 @@ async function createTikTokVideo(jobId, data) {
     const elKey     = ELEVENLABS_KEY || data.elevenlabs_key || '';
     const W = 1080, H = 1920;
 
-    console.log(`[${jobId}] Criando video: "${product_title}" | angulo ${angle}`);
+    console.log(`[${jobId}] Criando video: "${product_title}" | angulo ${angle} | OPENAI: ${apiKey ? 'OK' : 'MISSING'}`);
 
     // 1. Narração
     tiktokJobs[jobId].step = 'generating_audio';
@@ -652,7 +646,7 @@ async function createTikTokVideo(jobId, data) {
     ];
     const sceneImages = [];
     for (let i = 0; i < imagePrompts.length; i++) {
-      if (!apiKey) break;
+      if (!apiKey) { console.warn(`[${jobId}] Sem OPENAI_API_KEY — pulando DALL-E`); break; }
       try {
         const imgUrl  = await dalleGenerate(imagePrompts[i], apiKey, '1024x1792');
         const imgPath = path.join(jobDir, `scene_${i}.jpg`);
@@ -662,7 +656,7 @@ async function createTikTokVideo(jobId, data) {
       } catch(e) { console.warn(`[${jobId}] Img ${i}: ${e.message}`); }
     }
 
-    // 3. B-roll Pexels portrait
+    // 3. B-roll Pexels
     tiktokJobs[jobId].step = 'fetching_broll';
     let brollPath = null;
     if (pexelsKey && sceneImages.length > 0) {
@@ -675,7 +669,7 @@ async function createTikTokVideo(jobId, data) {
       } catch(e) { console.warn(`[${jobId}] Pexels: ${e.message}`); }
     }
 
-    // 4. Cria clips
+    // 4. Clips
     tiktokJobs[jobId].step = 'creating_clips';
     const sceneDurations = [4, 12, 12, 10, Math.max(5, audioDuration - 38)];
     const sceneFiles     = [...sceneImages];
@@ -720,66 +714,46 @@ async function createTikTokVideo(jobId, data) {
 
     if (clipPaths.length === 0) throw new Error('Nenhum clip gerado');
 
-    // 5. Text overlays com quebra de linha correta
+    // 5. Text overlays
     tiktokJobs[jobId].step = 'adding_overlays';
     const overlayClips = [...clipPaths];
 
     const addOverlay = (inputPath, outputPath, text, yBase, color) => {
       const safeText = safeFfmpegText(text, 45);
-      const lines    = wrapText(safeText, 18); // max 18 chars por linha
+      const lines    = wrapText(safeText, 18);
       const fontfile = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf';
       const fontSize = 65;
       const lineH    = 80;
-
       const drawtext = lines.map((line, i) =>
         `drawtext=text='${line}':fontsize=${fontSize}:fontcolor=white:` +
         `x=(w-text_w)/2:y=${yBase}+${i * lineH}:` +
         `fontfile=${fontfile}:box=1:boxcolor=${color}@0.88:boxborderw=15`
       ).join(',');
-
-      execSync(
-        `ffmpeg -y -i "${inputPath}" -vf "${drawtext}" -c:v libx264 -preset fast "${outputPath}"`,
-        { timeout: 60000 }
-      );
+      execSync(`ffmpeg -y -i "${inputPath}" -vf "${drawtext}" -c:v libx264 -preset fast "${outputPath}"`, { timeout: 60000 });
     };
 
-    // Hook overlay — cena 0
     if (clipPaths[0] && fs.existsSync(clipPaths[0])) {
       const out = path.join(jobDir, 'hook_ov.mp4');
-      try {
-        addOverlay(clipPaths[0], out, hook, 'h*0.40', '0x2962ff');
-        overlayClips[0] = out;
-      } catch(e) { console.warn(`[${jobId}] Hook overlay: ${e.message}`); }
+      try { addOverlay(clipPaths[0], out, hook, 'h*0.40', '0x2962ff'); overlayClips[0] = out; }
+      catch(e) { console.warn(`[${jobId}] Hook overlay: ${e.message}`); }
     }
-
-    // CTA overlay — última cena
     const last = overlayClips.length - 1;
     if (overlayClips[last] && fs.existsSync(overlayClips[last])) {
       const out = path.join(jobDir, 'cta_ov.mp4');
-      try {
-        addOverlay(overlayClips[last], out, cta, 'h*0.38', '0xff6b35');
-        overlayClips[last] = out;
-      } catch(e) { console.warn(`[${jobId}] CTA overlay: ${e.message}`); }
+      try { addOverlay(overlayClips[last], out, cta, 'h*0.38', '0xff6b35'); overlayClips[last] = out; }
+      catch(e) { console.warn(`[${jobId}] CTA overlay: ${e.message}`); }
     }
 
-    // 6. Concat + merge áudio
+    // 6. Concat + merge
     tiktokJobs[jobId].step = 'rendering';
     const concatTxt = path.join(jobDir, 'concat.txt');
     fs.writeFileSync(concatTxt, overlayClips.filter(p => fs.existsSync(p)).map(p => `file '${p}'`).join('\n'));
-
     const silentMp4 = path.join(jobDir, 'silent.mp4');
-    execSync(
-      `ffmpeg -y -f concat -safe 0 -i "${concatTxt}" -c:v libx264 -preset fast -pix_fmt yuv420p "${silentMp4}"`,
-      { timeout: 300000 }
-    );
-
+    execSync(`ffmpeg -y -f concat -safe 0 -i "${concatTxt}" -c:v libx264 -preset fast -pix_fmt yuv420p "${silentMp4}"`, { timeout: 300000 });
     const finalMp4 = path.join(jobDir, 'final.mp4');
-    execSync(
-      `ffmpeg -y -i "${silentMp4}" -i "${audioPath}" -map 0:v -map 1:a -c:v copy -c:a aac -b:a 128k -shortest "${finalMp4}"`,
-      { timeout: 120000 }
-    );
+    execSync(`ffmpeg -y -i "${silentMp4}" -i "${audioPath}" -map 0:v -map 1:a -c:v copy -c:a aac -b:a 128k -shortest "${finalMp4}"`, { timeout: 120000 });
 
-    // 7. Upload R2
+    // 7. Upload
     tiktokJobs[jobId].step = 'uploading';
     const videoUrl = await uploadToR2Generic(finalMp4, `tiktok/${jobId}/video_${angle}.mp4`, 'video/mp4');
 
@@ -793,12 +767,9 @@ async function createTikTokVideo(jobId, data) {
       `🎯 Angulo ${angle + 1}\n` +
       `🔗 <a href="${videoUrl}">Download do video</a>\n\n` +
       `Poste no TikTok quando estiver pronto!`,
-      [[
-        { text: '✅ Postado!', callback_data: `posted_${jobId}` },
-        { text: '❌ Refazer',  callback_data: `redo_${jobId}` }
-      ]]
+      [[{ text: '✅ Postado!', callback_data: `posted_${jobId}` },
+        { text: '❌ Refazer',  callback_data: `redo_${jobId}` }]]
     );
-
     console.log(`[${jobId}] Video concluido: ${videoUrl}`);
 
   } catch(error) {
@@ -811,7 +782,7 @@ async function createTikTokVideo(jobId, data) {
   }
 }
 
-// ── FacelessAI Core Job ─────────────────────────────────────────
+// ── FacelessAI Core Job ────────────────────────────────────────
 async function processJob(jobId, data) {
   const jobDir = `/tmp/${jobId}`;
   fs.mkdirSync(jobDir, { recursive: true });
@@ -910,12 +881,12 @@ async function processJob(jobId, data) {
     execSync(`ffmpeg -y -i "${loopedVideoPath}" -i "${finalAudioPath}" -map 0:v -map 1:a -c:v copy -c:a aac -shortest "${outputPath}"`, { timeout: 300000 });
 
     jobs[jobId].progress = 'Enviando para R2...';
-    const r2Key    = `${jobId}.mp4`;
+    const r2Key     = `${jobId}.mp4`;
     const publicUrl = await uploadToR2(outputPath, r2Key);
-    jobs[jobId].status     = 'completed';
-    jobs[jobId].progress   = 'Concluido';
-    jobs[jobId].video_url  = publicUrl;
-    jobs[jobId].source     = source;
+    jobs[jobId].status    = 'completed';
+    jobs[jobId].progress  = 'Concluido';
+    jobs[jobId].video_url = publicUrl;
+    jobs[jobId].source    = source;
 
     await updateSupabase(jobId, { status: 'completed', video_url: publicUrl, video_title: sanitizeTitle(video_title), updated_at: new Date().toISOString() });
   } catch(error) {
@@ -928,17 +899,18 @@ async function processJob(jobId, data) {
   }
 }
 
-// ════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
 // ROTAS — FacelessAI
-// ════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
 
 app.get('/health', (req, res) => {
   res.json({
-    status: 'ok', version: '6.1',
+    status: 'ok', version: '6.2',
     storage: 'Cloudflare R2', db: 'Supabase',
     features: ['kling', 'pexels', 'queue', 'tiktok-shop'],
     queue: { length: jobQueue.length, processing: isProcessing },
-    tiktok_jobs: Object.keys(tiktokJobs).length
+    tiktok_jobs: Object.keys(tiktokJobs).length,
+    openai_configured: !!OPENAI_API_KEY
   });
 });
 
@@ -1014,9 +986,9 @@ app.get('/queue', authMiddleware, (req, res) => {
   res.json({ queue_length: jobQueue.length, is_processing: isProcessing, pending_jobs: jobQueue.map(j => j.jobId) });
 });
 
-// ════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
 // ROTAS — TikTok Shop
-// ════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
 
 app.post('/tiktok/create-product', authMiddleware, (req, res) => {
   const data = req.body;
@@ -1050,17 +1022,18 @@ app.get('/tiktok/jobs', authMiddleware, (req, res) => {
 app.post('/tiktok/test-telegram', authMiddleware, async (req, res) => {
   try {
     await sendTelegram(
-      '🤖 <b>TikTok Shop Bot ativo! v6.1</b>\n\nSeu sistema de automacao esta funcionando.\n\nAguarde as notificacoes toda segunda-feira as 7h.',
+      '🤖 <b>TikTok Shop Bot ativo! v6.2</b>\n\nSeu sistema de automacao esta funcionando.\n\nAguarde as notificacoes toda segunda-feira as 7h.',
       [[{ text: '✅ Recebi!', callback_data: 'test_ok' }]]
     );
     res.json({ ok: true, message: 'Telegram message sent' });
   } catch(e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
-// ════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`FacelessAI + TikTok Shop Render Server v6.1 na porta ${PORT}`);
-  console.log(`Fixes v6.1: cleanVal() remove = do n8n | wrapText() corrige texto quebrado`);
+  console.log(`FacelessAI + TikTok Shop Render Server v6.2 na porta ${PORT}`);
+  console.log(`Fixes v6.2: sendTelegram sem cleanVal | DALL-E sem response_format | OPENAI_API_KEY apenas do env`);
+  console.log(`OPENAI_API_KEY: ${OPENAI_API_KEY ? 'CONFIGURADA (' + OPENAI_API_KEY.substring(0,15) + '...)' : 'NAO CONFIGURADA'}`);
   try { console.log(`FFmpeg: ${execSync('ffmpeg -version').toString().split('\n')[0]}`); } catch {}
 });
