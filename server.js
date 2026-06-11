@@ -317,7 +317,7 @@ async function generateTTSChunk(text, voice, model, apiKey, outputPath) {
   fs.writeFileSync(outputPath, result.body);
 }
 
-// ── Telegram ── CORRIGIDO v6.4: sem cleanVal no texto ─────────
+// ── Telegram ── CORRIGIDO v6.5: sem cleanVal no texto ─────────
 function sendTelegram(text, buttons = null) {
   if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID) return Promise.resolve();
   return new Promise((resolve) => {
@@ -344,7 +344,7 @@ function sendTelegram(text, buttons = null) {
   });
 }
 
-// ── DALL-E ── v6.4: usa gpt-image-1, salva b64_json direto ───
+// ── DALL-E ── v6.5: usa gpt-image-1, salva b64_json direto ───
 function dalleGenerate(prompt, apiKey, size = '1024x1024', outputPath = null) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({ model: 'gpt-image-1', prompt, n: 1, size });
@@ -680,7 +680,7 @@ async function createTikTokVideo(jobId, data) {
 
     // 4. Clips
     tiktokJobs[jobId].step = 'creating_clips';
-    const sceneDurations = [4, 12, 12, 10, Math.max(5, audioDuration - 38)];
+    const sceneDurations = [4, 12, 12, 10, Math.max(10, audioDuration - 28)];
     const sceneFiles     = [...sceneImages];
 
     const fallbackColors = ['2962ff','ff6b35','1a237e','ff5722'];
@@ -914,7 +914,7 @@ async function processJob(jobId, data) {
 
 app.get('/health', (req, res) => {
   res.json({
-    status: 'ok', version: '6.4',
+    status: 'ok', version: '6.5',
     storage: 'Cloudflare R2', db: 'Supabase',
     features: ['kling', 'pexels', 'queue', 'tiktok-shop'],
     queue: { length: jobQueue.length, processing: isProcessing },
@@ -1031,7 +1031,7 @@ app.get('/tiktok/jobs', authMiddleware, (req, res) => {
 app.post('/tiktok/test-telegram', authMiddleware, async (req, res) => {
   try {
     await sendTelegram(
-      '🤖 <b>TikTok Shop Bot ativo! v6.4</b>\n\nSeu sistema de automacao esta funcionando.\n\nAguarde as notificacoes toda segunda-feira as 7h.',
+      '🤖 <b>TikTok Shop Bot ativo! v6.5</b>\n\nSeu sistema de automacao esta funcionando.\n\nAguarde as notificacoes toda segunda-feira as 7h.',
       [[{ text: '✅ Recebi!', callback_data: 'test_ok' }]]
     );
     res.json({ ok: true, message: 'Telegram message sent' });
@@ -1041,8 +1041,8 @@ app.post('/tiktok/test-telegram', authMiddleware, async (req, res) => {
 // ═══════════════════════════════════════════════════════════════
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`FacelessAI + TikTok Shop Render Server v6.4 na porta ${PORT}`);
-  console.log(`Fixes v6.4: sendTelegram sem cleanVal | DALL-E sem response_format | OPENAI_API_KEY apenas do env`);
+  console.log(`FacelessAI + TikTok Shop Render Server v6.5 na porta ${PORT}`);
+  console.log(`Fixes v6.5: sendTelegram sem cleanVal | DALL-E sem response_format | OPENAI_API_KEY apenas do env`);
   console.log(`OPENAI_API_KEY: ${OPENAI_API_KEY ? 'CONFIGURADA (' + OPENAI_API_KEY.substring(0,15) + '...)' : 'NAO CONFIGURADA'}`);
   try { console.log(`FFmpeg: ${execSync('ffmpeg -version').toString().split('\n')[0]}`); } catch {}
 });
