@@ -317,7 +317,7 @@ async function generateTTSChunk(text, voice, model, apiKey, outputPath) {
   fs.writeFileSync(outputPath, result.body);
 }
 
-// ── Telegram ── CORRIGIDO v6.6: sem cleanVal no texto ─────────
+// ── Telegram ── CORRIGIDO v6.7: sem cleanVal no texto ─────────
 function sendTelegram(text, buttons = null) {
   if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID) return Promise.resolve();
   return new Promise((resolve) => {
@@ -344,7 +344,7 @@ function sendTelegram(text, buttons = null) {
   });
 }
 
-// ── DALL-E ── v6.6: usa gpt-image-1, salva b64_json direto ───
+// ── DALL-E ── v6.7: usa gpt-image-1, salva b64_json direto ───
 function dalleGenerate(prompt, apiKey, size = '1024x1024', outputPath = null) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({ model: 'gpt-image-1', prompt, n: 1, size });
@@ -731,11 +731,11 @@ async function createTikTokVideo(jobId, data) {
     const overlayClips = [...clipPaths];
 
     const addOverlay = (inputPath, outputPath, text, yBase, color) => {
-      const safeText = safeFfmpegText(text, 45);
-      const lines    = wrapText(safeText, 18);
+      const safeText = safeFfmpegText(text, 120);
+      const lines    = wrapText(safeText, 22);
       const fontfile = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf';
-      const fontSize = 65;
-      const lineH    = 80;
+      const fontSize = 52;
+      const lineH    = 65;
       const drawtext = lines.map((line, i) =>
         `drawtext=text='${line}':fontsize=${fontSize}:fontcolor=white:` +
         `x=(w-text_w)/2:y=${yBase}+${i * lineH}:` +
@@ -918,7 +918,7 @@ async function processJob(jobId, data) {
 
 app.get('/health', (req, res) => {
   res.json({
-    status: 'ok', version: '6.6',
+    status: 'ok', version: '6.7',
     storage: 'Cloudflare R2', db: 'Supabase',
     features: ['kling', 'pexels', 'queue', 'tiktok-shop'],
     queue: { length: jobQueue.length, processing: isProcessing },
@@ -1035,7 +1035,7 @@ app.get('/tiktok/jobs', authMiddleware, (req, res) => {
 app.post('/tiktok/test-telegram', authMiddleware, async (req, res) => {
   try {
     await sendTelegram(
-      '🤖 <b>TikTok Shop Bot ativo! v6.6</b>\n\nSeu sistema de automacao esta funcionando.\n\nAguarde as notificacoes toda segunda-feira as 7h.',
+      '🤖 <b>TikTok Shop Bot ativo! v6.7</b>\n\nSeu sistema de automacao esta funcionando.\n\nAguarde as notificacoes toda segunda-feira as 7h.',
       [[{ text: '✅ Recebi!', callback_data: 'test_ok' }]]
     );
     res.json({ ok: true, message: 'Telegram message sent' });
@@ -1045,8 +1045,8 @@ app.post('/tiktok/test-telegram', authMiddleware, async (req, res) => {
 // ═══════════════════════════════════════════════════════════════
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`FacelessAI + TikTok Shop Render Server v6.6 na porta ${PORT}`);
-  console.log(`Fixes v6.6: sendTelegram sem cleanVal | DALL-E sem response_format | OPENAI_API_KEY apenas do env`);
+  console.log(`FacelessAI + TikTok Shop Render Server v6.7 na porta ${PORT}`);
+  console.log(`Fixes v6.7: sendTelegram sem cleanVal | DALL-E sem response_format | OPENAI_API_KEY apenas do env`);
   console.log(`OPENAI_API_KEY: ${OPENAI_API_KEY ? 'CONFIGURADA (' + OPENAI_API_KEY.substring(0,15) + '...)' : 'NAO CONFIGURADA'}`);
   try { console.log(`FFmpeg: ${execSync('ffmpeg -version').toString().split('\n')[0]}`); } catch {}
 });
