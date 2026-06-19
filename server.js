@@ -9,21 +9,33 @@ const crypto = require('crypto');
 const app = express();
 app.use(express.json({ limit: '50mb' }));
 
-const AUTH_KEY        = process.env.AUTH_KEY        || 'facelessai2026xaviersecretkey32x';
-const R2_ACCOUNT_ID   = 'dcd6de84a693624dc026f7bb36c15512';
-const R2_ACCESS_KEY   = 'b87fed362846fe8a45021f67254cada5';
-const R2_SECRET_KEY   = '6a4511f9fe8039b9839486dcdc3075dcfd2aad4355e73f98de4eecd24ccf0ed9';
-const R2_BUCKET       = 'facelessai-videos';
-const R2_PUBLIC_URL   = 'https://pub-5a163e6e865546d38356eb3df280caaa.r2.dev';
-const SUPABASE_URL    = 'https://fnzzqfffzvlffgilfpoz.supabase.co';
-const SUPABASE_KEY    = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZuenpxZmZmenZsZmZnaWxmcG96Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3OTk1OTk0NiwiZXhwIjoyMDk1NTM1OTQ2fQ.BT6WFo6HzkvrweJHXZTyDxNnwtLh2AZzbp5aTbXPgzM';
+// ── CREDENCIAIS — TODAS vêm exclusivamente de process.env, sem fallback literal.
+// Se faltar alguma no painel do Render (Environment), o servidor deve falhar
+// alto e claro, não silenciosamente usar um valor hardcoded. ────────────────
+const AUTH_KEY        = process.env.AUTH_KEY;
+const R2_ACCOUNT_ID   = process.env.R2_ACCOUNT_ID;
+const R2_ACCESS_KEY   = process.env.R2_ACCESS_KEY;
+const R2_SECRET_KEY   = process.env.R2_SECRET_KEY;
+const R2_BUCKET       = process.env.R2_BUCKET       || 'facelessai-videos';
+const R2_PUBLIC_URL   = process.env.R2_PUBLIC_URL   || 'https://pub-5a163e6e865546d38356eb3df280caaa.r2.dev';
+const SUPABASE_URL    = process.env.SUPABASE_URL    || 'https://fnzzqfffzvlffgilfpoz.supabase.co';
+const SUPABASE_KEY    = process.env.SUPABASE_KEY;
 
 // ── TikTok Shop Config ─────────────────────────────────────────
-// OPENAI_API_KEY vem APENAS do environment do Render (nunca hardcoded)
-const TELEGRAM_TOKEN   = process.env.TELEGRAM_TOKEN   || '8748410995:AAEb-JSEukVp50gz75FVPf6tiWuQphP4eqs';
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '1305437865';
-const ELEVENLABS_KEY   = process.env.ELEVENLABS_KEY   || 'sk_77e4c712b4c2bd6a18927ee7aff8b061b9e36f43863c4628';
-const OPENAI_API_KEY   = process.env.OPENAI_API_KEY   || '';
+// Todas as credenciais sensíveis vêm SOMENTE do environment do Render (nunca hardcoded)
+const TELEGRAM_TOKEN   = process.env.TELEGRAM_TOKEN;
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+const ELEVENLABS_KEY   = process.env.ELEVENLABS_KEY;
+const OPENAI_API_KEY   = process.env.OPENAI_API_KEY;
+
+// ── Validação de boot: falha rápido e claro se faltar credencial crítica ──
+const REQUIRED_ENV = ['AUTH_KEY', 'R2_ACCOUNT_ID', 'R2_ACCESS_KEY', 'R2_SECRET_KEY', 'SUPABASE_KEY'];
+const missingEnv = REQUIRED_ENV.filter(k => !process.env[k]);
+if (missingEnv.length > 0) {
+  console.error(`[BOOT] Faltam variáveis de ambiente obrigatórias: ${missingEnv.join(', ')}`);
+  console.error('[BOOT] Configura essas no painel do Render (Environment) antes de subir o serviço.');
+  process.exit(1);
+}
 
 const jobs       = {};
 const tiktokJobs = {};
@@ -1047,6 +1059,5 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`FacelessAI + TikTok Shop Render Server v6.7 na porta ${PORT}`);
   console.log(`Fixes v6.7: sendTelegram sem cleanVal | DALL-E sem response_format | OPENAI_API_KEY apenas do env`);
-  console.log(`OPENAI_API_KEY: ${OPENAI_API_KEY ? 'CONFIGURADA (' + OPENAI_API_KEY.substring(0,15) + '...)' : 'NAO CONFIGURADA'}`);
-  try { console.log(`FFmpeg: ${execSync('ffmpeg -version').toString().split('\n')[0]}`); } catch {}
+  console.log(`Credenciais: AUTH_KEY, R2_*, SUPABASE_KEY, TELEGRAM_*, ELEVENLABS_KEY — todas via process.env, sem fallback`);
 });
