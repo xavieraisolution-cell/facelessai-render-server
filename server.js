@@ -246,7 +246,10 @@ async function updateSupabase(jobId, data) {
       path: `/rest/v1/facelessai_jobs?job_id=eq.${jobId}`,
       method: 'PATCH',
       headers: {
-        'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`,
+        // sb_secret_... NÃO é JWT — vai só no header apikey.
+        // Authorization: Bearer foi removido de propósito: com a key nova,
+        // a Supabase rejeita a requisição se esse header estiver presente.
+        'apikey': SUPABASE_KEY,
         'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'Prefer': 'return=minimal'
       },
     }, body);
