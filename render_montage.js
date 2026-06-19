@@ -43,8 +43,8 @@ async function gerarMontagem(scenes, audioFile, outputFile, opts = {}) {
     const s = scenes[i];
     const out = `${tmpDir}/clip_${i}.mp4`;
     const paddedDuration = s.duration + transitionDuration;
-    const cmd = `ffmpeg -y -loop 1 -framerate ${fps} -i "${s.image}" -vf "scale=3840:2160,zoompan=z='min(zoom+${zoomRate},${maxZoom})':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${size}:fps=${fps}" -t ${paddedDuration} -c:v libx264 -pix_fmt yuv420p "${out}"`;
-    await execAsync(cmd);
+    const cmd = `ffmpeg -y -loop 1 -framerate ${fps} -i "${s.image}" -vf "scale=2560:1440,zoompan=z='min(zoom+${zoomRate},${maxZoom})':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${size}:fps=${fps}" -t ${paddedDuration} -c:v libx264 -pix_fmt yuv420p "${out}"`;
+    await execAsync(cmd, { maxBuffer: 1024 * 1024 * 20 });
     clipFiles.push({ file: out, duration: paddedDuration });
   }
 
