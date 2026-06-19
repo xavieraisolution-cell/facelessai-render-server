@@ -5,6 +5,7 @@ const path = require('path');
 const https = require('https');
 const http = require('http');
 const crypto = require('crypto');
+const { gerarMontagem } = require('./render_montage'); // módulo de zoom+crossfade pra imagens estáticas
 
 const app = express();
 app.use(express.json({ limit: '50mb' }));
@@ -93,8 +94,11 @@ async function processQueue() {
   if (jobQueue.length === 0) { isProcessing = false; return; }
   isProcessing = true;
   const { jobId, data } = jobQueue.shift();
-  console.log(`[Queue] Iniciando job ${jobId}. Restam ${jobQueue.length} na fila.`);
-  try { await processJob(jobId, data); }
+  console.log(`[Queue] Iniciando job ${jobId} (mode=${data.mode || 'kling'}). Restam ${jobQueue.length} na fila.`);
+  try {
+    if (data.mode === 'image_montage') await processMontageJob(jobId, data);
+    else await processJob(jobId, data);
+  }
   catch (e) { console.error(`[Queue] Erro no job ${jobId}:`, e.message); }
   processQueue();
 }
@@ -921,6 +925,93 @@ async function processJob(jobId, data) {
     console.error(`[${jobId}] ERRO:`, error.message);
     jobs[jobId].status = 'failed';
     jobs[jobId].error  = error.message;
+    await updateSupabase(jobId, { status: 'failed', error: error.message });
+  } finally {
+    try { execSync(`rm -rf "${jobDir}"`); } catch {}
+  }
+}
+
+// ── Montagem (imagens estáticas + zoom/crossfade) ──────────────
+async function processMontageJob(jobId, data) {
+  const jobDir = `/tmp/${jobId}`;
+  fs.mkdirSync(jobDir, { recursive: true });
+  try {
+    jobs[jobId].status = 'processing';
+    jobs[jobId].progress = 'Iniciando montagem...';
+
+    const {
+      scenes,
+      video_title = 'FacelessAI',
+      openai_api_key,
+      tts_voice = 'alloy',
+      tts_model = 'tts-1',
+      transition_duration = 0.8,
+    } = data;
+
+    if (!Array.isArray(scenes) || scenes.length < 2) {
+      throw new Error('Precisa de um array "scenes" com no mínimo 2 itens (cada um com image_url e narration)');
+    }
+
+    const apiKey = openai_api_key || OPENAI_API_KEY;
+    if (!apiKey) throw new Error('Nenhuma OPENAI_API_KEY disponível para gerar a narração');
+
+    jobs[jobId].video_title = video_title;
+
+    // 1. TTS por cena — isso dá a duração REAL de cada cena (não estimativa por contagem de palavras)
+    const sceneAudioFiles = [];
+    for (let i = 0; i < scenes.length; i++) {
+      jobs[jobId].progress = `Gerando narração da cena ${i + 1}/${scenes.length}...`;
+      const audioPath = path.join(jobDir, `scene_audio_${i}.mp3`);
+      await generateTTSChunk(scenes[i].narration, tts_voice, tts_model, apiKey, audioPath);
+      sceneAudioFiles.push(audioPath);
+    }
+
+    // 2. Mede a duração real de cada áudio de cena via ffprobe
+    const scenesWithDuration = [];
+    for (let i = 0; i < scenes.length; i++) {
+      const d = execSync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${sceneAudioFiles[i]}"`, { timeout: 30000 }).toString().trim();
+      const duration = parseFloat(d) || 4;
+      scenesWithDuration.push({ ...scenes[i], duration });
+    }
+
+    // 3. Baixa (ou copia) a imagem de cada cena
+    jobs[jobId].progress = 'Baixando imagens das cenas...';
+    for (let i = 0; i < scenesWithDuration.length; i++) {
+      const scene = scenesWithDuration[i];
+      const imgPath = path.join(jobDir, `scene_img_${i}.png`);
+      if (scene.image_url) await downloadFile(scene.image_url, imgPath);
+      else if (scene.image) fs.copyFileSync(scene.image, imgPath);
+      else throw new Error(`Cena ${i} não tem image_url nem image`);
+      scene.image = imgPath;
+    }
+
+    // 4. Concatena os áudios de cada cena, na mesma ordem, pra formar a narração final
+    jobs[jobId].progress = 'Montando narração final...';
+    const concatListPath = path.join(jobDir, 'audio_concat.txt');
+    fs.writeFileSync(concatListPath, sceneAudioFiles.map(p => `file '${p}'`).join('\n'));
+    const narrationPath = path.join(jobDir, 'narration.mp3');
+    execSync(`ffmpeg -y -f concat -safe 0 -i "${concatListPath}" -c copy "${narrationPath}"`, { timeout: 120000 });
+
+    // 5. Renderiza: zoom (Ken Burns) + crossfade entre cenas, sincronizado com a narração
+    jobs[jobId].progress = 'Renderizando vídeo (zoom + transições)...';
+    const outputPath = path.join(jobDir, 'output.mp4');
+    gerarMontagem(scenesWithDuration, narrationPath, outputPath, { transitionDuration: transition_duration, tmpDir: jobDir });
+
+    // 6. Upload pro R2
+    jobs[jobId].progress = 'Enviando para R2...';
+    const r2Key = `${jobId}.mp4`;
+    const publicUrl = await uploadToR2(outputPath, r2Key);
+
+    jobs[jobId].status = 'completed';
+    jobs[jobId].progress = 'Concluido';
+    jobs[jobId].video_url = publicUrl;
+    jobs[jobId].source = 'image_montage';
+
+    await updateSupabase(jobId, { status: 'completed', video_url: publicUrl, video_title: sanitizeTitle(video_title), updated_at: new Date().toISOString() });
+  } catch (error) {
+    console.error(`[${jobId}] ERRO (montagem):`, error.message);
+    jobs[jobId].status = 'failed';
+    jobs[jobId].error = error.message;
     await updateSupabase(jobId, { status: 'failed', error: error.message });
   } finally {
     try { execSync(`rm -rf "${jobDir}"`); } catch {}
