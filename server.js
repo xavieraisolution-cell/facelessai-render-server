@@ -995,7 +995,7 @@ async function processMontageJob(jobId, data) {
     // 5. Renderiza: zoom (Ken Burns) + crossfade entre cenas, sincronizado com a narração
     jobs[jobId].progress = 'Renderizando vídeo (zoom + transições)...';
     const outputPath = path.join(jobDir, 'output.mp4');
-    gerarMontagem(scenesWithDuration, narrationPath, outputPath, { transitionDuration: transition_duration, tmpDir: jobDir });
+    await gerarMontagem(scenesWithDuration, narrationPath, outputPath, { transitionDuration: transition_duration, tmpDir: jobDir });
 
     // 6. Upload pro R2
     jobs[jobId].progress = 'Enviando para R2...';
