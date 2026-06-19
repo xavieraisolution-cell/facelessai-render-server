@@ -1086,6 +1086,20 @@ app.post('/pexels-search', authMiddleware, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+app.post('/upload-image', authMiddleware, async (req, res) => {
+  try {
+    const { image_base64, key } = req.body;
+    if (!image_base64 || !key) return res.status(400).json({ error: 'image_base64 and key required' });
+    const tmpPath = `/tmp/upload_${Date.now()}_${Math.random().toString(36).slice(2)}.png`;
+    fs.writeFileSync(tmpPath, Buffer.from(image_base64, 'base64'));
+    const url = await uploadToR2Generic(tmpPath, key, 'image/png');
+    fs.unlinkSync(tmpPath);
+    res.json({ url });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post('/render', authMiddleware, async (req, res) => {
   const jobId = req.body.job_id || `job_${Date.now()}`;
   jobs[jobId] = { status: 'queued', progress: 'Na fila...', created_at: new Date().toISOString() };
