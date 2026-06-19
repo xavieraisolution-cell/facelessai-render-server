@@ -260,6 +260,24 @@ async function updateSupabase(jobId, data) {
   } catch(e) { console.warn(`[${jobId}] Falha Supabase: ${e.message}`); }
 }
 
+// INSERT inicial — sem isso, o PATCH do updateSupabase() nunca acha a linha pra atualizar
+// (PATCH em filtro que não bate com nenhuma linha simplesmente não faz nada, sem erro).
+async function createSupabaseJob(jobId, data) {
+  try {
+    const body = JSON.stringify({ job_id: jobId, status: 'processing', ...data, created_at: new Date().toISOString() });
+    const url = new URL(SUPABASE_URL);
+    await httpsRequest({
+      hostname: url.hostname,
+      path: `/rest/v1/facelessai_jobs`,
+      method: 'POST',
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'Prefer': 'return=minimal'
+      },
+    }, body);
+  } catch(e) { console.warn(`[${jobId}] Falha ao criar job no Supabase: ${e.message}`); }
+}
+
 // ── R2 Sign ────────────────────────────────────────────────────
 function signR2Request(method, key, contentType, bodyBuffer) {
   const now = new Date();
@@ -956,6 +974,7 @@ async function processMontageJob(jobId, data) {
     if (!apiKey) throw new Error('Nenhuma OPENAI_API_KEY disponível para gerar a narração');
 
     jobs[jobId].video_title = video_title;
+    await createSupabaseJob(jobId, { video_title: sanitizeTitle(video_title) });
 
     // 1. TTS por cena — isso dá a duração REAL de cada cena (não estimativa por contagem de palavras)
     const sceneAudioFiles = [];
