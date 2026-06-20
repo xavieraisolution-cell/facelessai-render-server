@@ -979,7 +979,7 @@ async function processMontageJob(jobId, data) {
     if (!apiKey) throw new Error('Nenhuma OPENAI_API_KEY disponível para gerar a narração');
 
     jobs[jobId].video_title = video_title;
-    await createSupabaseJob(jobId, { video_title: sanitizeTitle(video_title) });
+    await createSupabaseJob(jobId, { video_title: sanitizeTitle(video_title), source: 'image_montage' });
 
     // 1. TTS por cena — isso dá a duração REAL de cada cena (não estimativa por contagem de palavras)
     const sceneAudioFiles = [];
