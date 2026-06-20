@@ -4,22 +4,64 @@ const execAsync = util.promisify(exec);
 const EXEC_OPTS = { maxBuffer: 1024 * 1024 * 20 };
 
 /**
+ * Funde uma lista de clipes 2 a 2, em rodadas (árvore binária), até sobrar 1 só.
+ * Cada chamada de ffmpeg processa só 2 streams pequenos por vez — nunca o vídeo
+ * acumulado inteiro (diferente da versão sequencial anterior, que re-codificava
+ * tudo que já tinha sido montado em cada passo, virando O(n²) de trabalho total).
+ * Árvore binária: O(n log n), mesma vantagem de memória.
+ */
+async function mergeListInPairs(files, transitionDuration, tmpDir, label) {
+  let current = files;
+  let round = 0;
+
+  while (current.length > 1) {
+    const next = [];
+    for (let i = 0; i < current.length; i += 2) {
+      if (i + 1 >= current.length) {
+        // número ímpar de itens nessa rodada — o último sobra sozinho pra próxima rodada
+        next.push(current[i]);
+        continue;
+      }
+      const a = current[i];
+      const b = current[i + 1];
+      const out = `${tmpDir}/${label}_r${round}_${i}.mp4`;
+      const offset = a.duration - transitionDuration;
+      const cmd = `ffmpeg -y -i "${a.file}" -i "${b.file}" -filter_complex "[0:v][1:v]xfade=transition=fade:duration=${transitionDuration}:offset=${offset.toFixed(3)}[outv]" -map "[outv]" -c:v libx264 -pix_fmt yuv420p "${out}"`;
+      await execAsync(cmd, EXEC_OPTS);
+
+      const newDuration = a.duration + b.duration - transitionDuration;
+      next.push({ file: out, duration: newDuration });
+
+      try { await execAsync(`rm -f "${a.file}" "${b.file}"`); } catch (e) { /* não crítico */ }
+    }
+    current = next;
+    round++;
+  }
+
+  return current[0];
+}
+
+/**
  * Gera um vídeo de montagem a partir de imagens estáticas com efeito Ken Burns
  * (zoom lento) + crossfade entre cenas, sincronizado com áudio de narração.
  *
  * HISTÓRICO DE BUGS JÁ CORRIGIDOS NESSE ARQUIVO (não reintroduzir):
- * 1. execSync bloqueava o servidor inteiro durante o render -> trocado por exec assíncrono.
+ * 1. execSync bloqueava o servidor inteiro durante o render -> exec assíncrono.
  * 2. Sem padding de duração, vídeo terminava antes do áudio -> cada clipe ganha
  *    +transitionDuration de duração antes do xfade "comer" essa sobra.
- * 3. Um único filtro xfade com N streams simultâneos (todas as cenas de uma vez)
- *    causava "Ran out of memory (used over 2GB)" no Render a partir de ~20-30 cenas.
- *    Corrigido fundindo os clipes 2 a 2, sequencialmente — nunca mais que 2 streams
- *    de vídeo decodificados ao mesmo tempo, independente de quantas cenas existam.
+ * 3. Um único filtro xfade com N streams simultâneos causava OOM (Render reportou
+ *    "Ran out of memory, used over 2GB") a partir de ~20-30 cenas -> fusão 2 a 2.
+ * 4. Fusão 2 a 2 SEQUENCIAL (sempre fundindo no acumulado inteiro) resolvia a
+ *    memória mas virava O(n²) de tempo total (cada passo re-codifica tudo que já
+ *    foi montado) -> trocado por fusão em ÁRVORE BINÁRIA (mergeListInPairs acima),
+ *    O(n log n), mesma vantagem de memória sem o custo de tempo.
+ * 5. zoompan com d=1 NUNCA anima de verdade (testado empiricamente: diff de pixel
+ *    entre frame inicial e final ~0, mesmo com zoomRate alto) -> d precisa ser o
+ *    número TOTAL de frames do clipe (duração × fps), calculado por cena.
  *
- * @param {Array<{image: string, duration: number}>} scenes - cada cena com caminho da imagem
- *   e duração em segundos (vem do tempo de fala da TTS daquele trecho de narração)
- * @param {string} audioFile - caminho do áudio de narração já gerado (TTS)
- * @param {string} outputFile - caminho do mp4 final
+ * @param {Array<{image: string, duration: number}>} scenes
+ * @param {string} audioFile
+ * @param {string} outputFile
  * @param {object} opts - { transitionDuration=0.8, fps=25, size='1280x720', zoomRate=0.0012, maxZoom=1.15 }
  */
 async function gerarMontagem(scenes, audioFile, outputFile, opts = {}) {
@@ -37,48 +79,27 @@ async function gerarMontagem(scenes, audioFile, outputFile, opts = {}) {
   }
 
   // 1. Gera cada clipe individual com zoompan, sequencialmente.
-  // JÁ com o padding do crossfade somado na duração.
   const clipFiles = [];
   for (let i = 0; i < scenes.length; i++) {
     const s = scenes[i];
     const out = `${tmpDir}/clip_${i}.mp4`;
     const paddedDuration = s.duration + transitionDuration;
-    const cmd = `ffmpeg -y -loop 1 -framerate ${fps} -i "${s.image}" -vf "scale=2560:1440,zoompan=z='min(zoom+${zoomRate},${maxZoom})':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${size}:fps=${fps}" -t ${paddedDuration} -c:v libx264 -pix_fmt yuv420p "${out}"`;
+    const totalFrames = Math.round(paddedDuration * fps); // zoompan precisa de d = total de frames do clipe pra animar de verdade — d=1 NÃO anima (testado e confirmado, ver nota no topo do arquivo)
+    const cmd = `ffmpeg -y -loop 1 -framerate ${fps} -i "${s.image}" -vf "scale=2560:1440,zoompan=z='min(zoom+${zoomRate},${maxZoom})':d=${totalFrames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${size}:fps=${fps}" -t ${paddedDuration} -c:v libx264 -pix_fmt yuv420p "${out}"`;
     await execAsync(cmd, EXEC_OPTS);
     clipFiles.push({ file: out, duration: paddedDuration });
   }
 
-  // 2. Funde os clipes DOIS A DOIS, sequencialmente (não 1 filtro com N entradas).
-  // Cada chamada de ffmpeg aqui só abre 2 streams de vídeo por vez — memória
-  // não escala com o número total de cenas, só com a duração acumulada.
-  let mergedFile = clipFiles[0].file;
-  let mergedDuration = clipFiles[0].duration;
+  // 2. Funde em árvore binária (rápido e com memória limitada)
+  const merged = await mergeListInPairs(clipFiles, transitionDuration, tmpDir, 'merge');
 
-  for (let i = 1; i < clipFiles.length; i++) {
-    const nextOut = `${tmpDir}/merged_${i}.mp4`;
-    const offset = mergedDuration - transitionDuration;
-    const cmd = `ffmpeg -y -i "${mergedFile}" -i "${clipFiles[i].file}" -filter_complex "[0:v][1:v]xfade=transition=fade:duration=${transitionDuration}:offset=${offset.toFixed(3)}[outv]" -map "[outv]" -c:v libx264 -pix_fmt yuv420p "${nextOut}"`;
-    await execAsync(cmd, EXEC_OPTS);
-
-    if (mergedFile !== clipFiles[0].file) {
-      try { await execAsync(`rm -f "${mergedFile}"`); } catch (e) { /* não crítico */ }
-    }
-
-    mergedDuration = mergedDuration + clipFiles[i].duration - transitionDuration;
-    mergedFile = nextOut;
-  }
-
-  // 3. Mux com o áudio de narração (copy de vídeo — já está codificado, não reprocessa)
-  const finalCmd = `ffmpeg -y -i "${mergedFile}" -i "${audioFile}" -map 0:v -map 1:a -c:v copy -c:a aac "${outputFile}"`;
+  // 3. Mux com o áudio de narração (copy de vídeo — já está codificado)
+  const finalCmd = `ffmpeg -y -i "${merged.file}" -i "${audioFile}" -map 0:v -map 1:a -c:v copy -c:a aac "${outputFile}"`;
   await execAsync(finalCmd, EXEC_OPTS);
 
-  // 4. Limpeza
-  for (const c of clipFiles) {
-    try { await execAsync(`rm -f "${c.file}"`); } catch (e) { /* não crítico */ }
-  }
-  try { await execAsync(`rm -f "${mergedFile}"`); } catch (e) { /* não crítico */ }
+  try { await execAsync(`rm -f "${merged.file}"`); } catch (e) { /* não crítico */ }
 
-  return { outputFile, videoDuration: mergedDuration };
+  return { outputFile, videoDuration: merged.duration };
 }
 
 module.exports = { gerarMontagem };
