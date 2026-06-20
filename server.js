@@ -211,18 +211,23 @@ function searchPexelsPortrait(query, apiKey, count = 3) {
 }
 
 // ── Download ───────────────────────────────────────────────────
-function downloadFile(url, dest) {
+function downloadFile(url, dest, timeoutMs = 30000) {
   return new Promise((resolve, reject) => {
     const file = fs.createWriteStream(dest);
     const protocol = url.startsWith('https') ? https : http;
-    protocol.get(url, (response) => {
+    const req = protocol.get(url, (response) => {
       if (response.statusCode === 301 || response.statusCode === 302) {
         file.close();
-        return downloadFile(response.headers.location, dest).then(resolve).catch(reject);
+        return downloadFile(response.headers.location, dest, timeoutMs).then(resolve).catch(reject);
       }
       response.pipe(file);
       file.on('finish', () => file.close(resolve));
     }).on('error', (err) => { fs.unlink(dest, () => {}); reject(err); });
+    req.setTimeout(timeoutMs, () => {
+      req.destroy();
+      fs.unlink(dest, () => {});
+      reject(new Error(`Download timeout (${timeoutMs}ms) para ${url}`));
+    });
   });
 }
 
