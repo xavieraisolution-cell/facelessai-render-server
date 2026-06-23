@@ -623,6 +623,12 @@ async function createTikTokProduct(jobId, data) {
 
     const tiktokTitle = cleanVal(data.tiktok_title) || title;
 
+    // DESATIVADO 22/06/2026: essa notificação duplicava a mensagem que o n8n já manda
+    // (node "Telegram Product Review") após o Poll Product Status confirmar o job completo.
+    // Os dados (pdf_url, cover_url, mockup_urls) continuam sendo gravados acima e disponíveis
+    // via /tiktok/status/:jobId — só o envio direto pelo Telegram foi desligado aqui.
+    // Para reativar, descomente o bloco abaixo.
+    /*
     await sendTelegram(
       `✅ <b>Produto criado — Revisao necessaria!</b>\n\n` +
       `📄 <b>${title}</b>\n` +
@@ -633,6 +639,7 @@ async function createTikTokProduct(jobId, data) {
       [[{ text: '✅ Aprovar — Criar videos', callback_data: `approve_${jobId}` }],
        [{ text: '❌ Refazer produto',         callback_data: `redo_product_${jobId}` }]]
     );
+    */
   } catch(error) {
     console.error(`[TikTok Prod ${jobId}]`, error.message);
     tiktokJobs[jobId].status = 'failed';
@@ -816,6 +823,12 @@ async function createTikTokVideo(jobId, data) {
     tiktokJobs[jobId].step      = 'done';
     tiktokJobs[jobId].video_url = videoUrl;
 
+    // DESATIVADO 22/06/2026: duplicava a mensagem que o n8n manda (node "Send a text message")
+    // depois do HTTP Request1 confirmar o job completo. O callback_data aqui usava jobId
+    // (formato vid_XXXXX), diferente do Record ID que o fluxo do n8n espera — outro motivo
+    // pra essa notificação não ser a fonte de verdade. video_url continua disponível via
+    // /tiktok/status/:jobId. Para reativar, descomente o bloco abaixo.
+    /*
     await sendTelegram(
       `🎬 <b>Video TikTok pronto!</b>\n\n` +
       `📦 ${product_title}\n` +
@@ -825,6 +838,7 @@ async function createTikTokVideo(jobId, data) {
       [[{ text: '✅ Postado!', callback_data: `posted_${jobId}` },
         { text: '❌ Refazer',  callback_data: `redo_${jobId}` }]]
     );
+    */
     console.log(`[${jobId}] Video concluido: ${videoUrl}`);
 
   } catch(error) {
