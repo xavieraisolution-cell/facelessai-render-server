@@ -247,13 +247,13 @@ function httpsRequest(options, body) {
 }
 
 // ── Supabase ───────────────────────────────────────────────────
-async function updateSupabase(jobId, data) {
+async function updateSupabase(jobId, data, table = 'facelessai_jobs') {
   try {
     const body = JSON.stringify(data);
     const url = new URL(SUPABASE_URL);
     await httpsRequest({
       hostname: url.hostname,
-      path: `/rest/v1/facelessai_jobs?job_id=eq.${jobId}`,
+      path: `/rest/v1/${table}?job_id=eq.${jobId}`,
       method: 'PATCH',
       headers: {
         // sb_secret_... NÃO é JWT — vai só no header apikey.
@@ -263,25 +263,25 @@ async function updateSupabase(jobId, data) {
         'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'Prefer': 'return=minimal'
       },
     }, body);
-  } catch(e) { console.warn(`[${jobId}] Falha Supabase: ${e.message}`); }
+  } catch(e) { console.warn(`[${jobId}] Falha Supabase (${table}): ${e.message}`); }
 }
 
 // INSERT inicial — sem isso, o PATCH do updateSupabase() nunca acha a linha pra atualizar
 // (PATCH em filtro que não bate com nenhuma linha simplesmente não faz nada, sem erro).
-async function createSupabaseJob(jobId, data) {
+async function createSupabaseJob(jobId, data, table = 'facelessai_jobs') {
   try {
     const body = JSON.stringify({ job_id: jobId, status: 'processing', ...data, created_at: new Date().toISOString() });
     const url = new URL(SUPABASE_URL);
     await httpsRequest({
       hostname: url.hostname,
-      path: `/rest/v1/facelessai_jobs`,
+      path: `/rest/v1/${table}`,
       method: 'POST',
       headers: {
         'apikey': SUPABASE_KEY,
         'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'Prefer': 'return=minimal'
       },
     }, body);
-  } catch(e) { console.warn(`[${jobId}] Falha ao criar job no Supabase: ${e.message}`); }
+  } catch(e) { console.warn(`[${jobId}] Falha ao criar job no Supabase (${table}): ${e.message}`); }
 }
 
 // ── R2 Sign ────────────────────────────────────────────────────
@@ -1009,7 +1009,7 @@ async function processMontageJob(jobId, data) {
     }
 
     jobs[jobId].video_title = video_title;
-    await createSupabaseJob(jobId, { video_title: sanitizeTitle(video_title), source: 'image_montage', player_name: player_name || null });
+    await createSupabaseJob(jobId, { video_title: sanitizeTitle(video_title), source: 'image_montage', player_name: player_name || null }, 'brokeinlove_jobs');
 
     // 1. TTS por cena — isso dá a duração REAL de cada cena (não estimativa por contagem de palavras)
     const sceneAudioFiles = [];
@@ -1065,12 +1065,12 @@ async function processMontageJob(jobId, data) {
     jobs[jobId].video_url = publicUrl;
     jobs[jobId].source = 'image_montage';
 
-    await updateSupabase(jobId, { status: 'completed', video_url: publicUrl, video_title: sanitizeTitle(video_title), updated_at: new Date().toISOString() });
+    await updateSupabase(jobId, { status: 'completed', video_url: publicUrl, video_title: sanitizeTitle(video_title), updated_at: new Date().toISOString() }, 'brokeinlove_jobs');
   } catch (error) {
     console.error(`[${jobId}] ERRO (montagem):`, error.message);
     jobs[jobId].status = 'failed';
     jobs[jobId].error = error.message;
-    await updateSupabase(jobId, { status: 'failed', error: error.message });
+    await updateSupabase(jobId, { status: 'failed', error: error.message }, 'brokeinlove_jobs');
   } finally {
     try { execSync(`rm -rf "${jobDir}"`); } catch {}
   }
