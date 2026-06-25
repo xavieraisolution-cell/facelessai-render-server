@@ -988,6 +988,7 @@ async function processMontageJob(jobId, data) {
       tts_provider,            // novo: 'elevenlabs' | 'openai' (default openai se ausente)
       elevenlabs_voice_id,     // novo: voice_id específico, sobrepõe RAUNAK_M_VOICE_ID se vier
       elevenlabs_api_key,      // novo: permite passar a key via payload também, além do env
+      size,                    // novo: resolução do vídeo, ex: '1080x1920' para vertical (Shorts/TikTok/Reels). Se ausente, gerarMontagem() usa o default horizontal 1280x720 -- NÃO afeta canais que não enviam esse campo.
     } = data;
 
     if (!Array.isArray(scenes) || scenes.length < 2) {
@@ -1053,7 +1054,7 @@ async function processMontageJob(jobId, data) {
     // 5. Renderiza: zoom (Ken Burns) + crossfade entre cenas, sincronizado com a narração
     jobs[jobId].progress = 'Renderizando vídeo (zoom + transições)...';
     const outputPath = path.join(jobDir, 'output.mp4');
-    await gerarMontagem(scenesWithDuration, narrationPath, outputPath, { transitionDuration: transition_duration, tmpDir: jobDir });
+    await gerarMontagem(scenesWithDuration, narrationPath, outputPath, { transitionDuration: transition_duration, tmpDir: jobDir, ...(size ? { size } : {}) });
 
     // 6. Upload pro R2
     jobs[jobId].progress = 'Enviando para R2...';
