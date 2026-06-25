@@ -62,13 +62,13 @@ async function mergeListInPairs(files, transitionDuration, tmpDir, label) {
  * @param {Array<{image: string, duration: number}>} scenes
  * @param {string} audioFile
  * @param {string} outputFile
- * @param {object} opts - { transitionDuration=0.8, fps=25, size='1280x720', zoomRate=0.0012, maxZoom=1.15 }
+ * @param {object} opts - { transitionDuration=0.8, fps=25, size='1080x1920', zoomRate=0.0012, maxZoom=1.15 }
  */
 async function gerarMontagem(scenes, audioFile, outputFile, opts = {}) {
   const {
     transitionDuration = 0.8,
     fps = 25,
-    size = '1280x720',
+    size = '1080x1920', // vertical 9:16 -- necessário pra classificação automática como YouTube Short (vídeos horizontais nunca qualificam, independente da duração) e compatível sem reencode com TikTok/Instagram Reels/Facebook Reels
     zoomRate = 0.0012,
     maxZoom = 1.15,
     tmpDir = '/tmp',
@@ -79,13 +79,19 @@ async function gerarMontagem(scenes, audioFile, outputFile, opts = {}) {
   }
 
   // 1. Gera cada clipe individual com zoompan, sequencialmente.
+  const [outW, outH] = size.split('x').map(Number);
+  // Resolução intermediária maior, mantendo o MESMO aspect ratio do size final, antes do zoompan reduzir.
+  // Antes era fixa em 2560x1440 (16:9) -- com size vertical (9:16) isso distorcia a imagem, porque o zoompan
+  // redimensiona pra `s=` sem preservar aspect ratio sozinho. Múltiplo de 2x dá margem pro zoom sem perder nitidez.
+  const upscaleW = outW * 2;
+  const upscaleH = outH * 2;
   const clipFiles = [];
   for (let i = 0; i < scenes.length; i++) {
     const s = scenes[i];
     const out = `${tmpDir}/clip_${i}.mp4`;
     const paddedDuration = s.duration + transitionDuration;
     const totalFrames = Math.round(paddedDuration * fps); // zoompan precisa de d = total de frames do clipe pra animar de verdade — d=1 NÃO anima (testado e confirmado, ver nota no topo do arquivo)
-    const cmd = `ffmpeg -y -loop 1 -framerate ${fps} -i "${s.image}" -vf "scale=2560:1440,zoompan=z='min(zoom+${zoomRate},${maxZoom})':d=${totalFrames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${size}:fps=${fps}" -t ${paddedDuration} -c:v libx264 -pix_fmt yuv420p "${out}"`;
+    const cmd = `ffmpeg -y -loop 1 -framerate ${fps} -i "${s.image}" -vf "scale=${upscaleW}:${upscaleH}:force_original_aspect_ratio=increase,crop=${upscaleW}:${upscaleH},zoompan=z='min(zoom+${zoomRate},${maxZoom})':d=${totalFrames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${size}:fps=${fps}" -t ${paddedDuration} -c:v libx264 -pix_fmt yuv420p "${out}"`;
     await execAsync(cmd, EXEC_OPTS);
     clipFiles.push({ file: out, duration: paddedDuration });
   }
