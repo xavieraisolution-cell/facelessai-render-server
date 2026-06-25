@@ -28,6 +28,7 @@ const TELEGRAM_TOKEN   = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const ELEVENLABS_KEY   = process.env.ELEVENLABS_KEY;
 const OPENAI_API_KEY   = process.env.OPENAI_API_KEY;
+const RAUNAK_M_VOICE_ID = process.env.RAUNAK_M_VOICE_ID || 'oHxj8sUpVpscBK7Mmroq'; // voz "Raunak M – Viral & Relatable Reel Voice", padrão do canal Broke & In Love
 
 // ── Validação de boot: falha rápido e claro se faltar credencial crítica ──
 const REQUIRED_ENV = ['AUTH_KEY', 'R2_ACCOUNT_ID', 'R2_ACCESS_KEY', 'R2_SECRET_KEY', 'SUPABASE_KEY'];
@@ -984,14 +985,28 @@ async function processMontageJob(jobId, data) {
       tts_voice = 'alloy',
       tts_model = 'tts-1',
       transition_duration = 0.8,
+      tts_provider,            // novo: 'elevenlabs' | 'openai' (default openai se ausente)
+      elevenlabs_voice_id,     // novo: voice_id específico, sobrepõe RAUNAK_M_VOICE_ID se vier
+      elevenlabs_api_key,      // novo: permite passar a key via payload também, além do env
     } = data;
 
     if (!Array.isArray(scenes) || scenes.length < 2) {
       throw new Error('Precisa de um array "scenes" com no mínimo 2 itens (cada um com image_url e narration)');
     }
 
-    const apiKey = openai_api_key || OPENAI_API_KEY;
-    if (!apiKey) throw new Error('Nenhuma OPENAI_API_KEY disponível para gerar a narração');
+    // Decide o provedor de TTS sem fallback silencioso: se foi pedido ElevenLabs
+    // e faltar a key, falha com erro claro em vez de cair pra OpenAI sem avisar.
+    const useElevenLabs = tts_provider === 'elevenlabs' || !!elevenlabs_voice_id;
+    const elKey = elevenlabs_api_key || ELEVENLABS_KEY;
+    const voiceIdToUse = elevenlabs_voice_id || RAUNAK_M_VOICE_ID;
+
+    let apiKey = null;
+    if (useElevenLabs) {
+      if (!elKey) throw new Error('tts_provider=elevenlabs (ou elevenlabs_voice_id) foi pedido, mas nenhuma ELEVENLABS_KEY/elevenlabs_api_key está configurada. Abortando -- sem fallback automático pra OpenAI.');
+    } else {
+      apiKey = openai_api_key || OPENAI_API_KEY;
+      if (!apiKey) throw new Error('Nenhuma OPENAI_API_KEY disponível para gerar a narração');
+    }
 
     jobs[jobId].video_title = video_title;
     await createSupabaseJob(jobId, { video_title: sanitizeTitle(video_title), source: 'image_montage', player_name: player_name || null });
@@ -1001,7 +1016,11 @@ async function processMontageJob(jobId, data) {
     for (let i = 0; i < scenes.length; i++) {
       jobs[jobId].progress = `Gerando narração da cena ${i + 1}/${scenes.length}...`;
       const audioPath = path.join(jobDir, `scene_audio_${i}.mp3`);
-      await generateTTSChunk(scenes[i].narration, tts_voice, tts_model, apiKey, audioPath);
+      if (useElevenLabs) {
+        await elevenLabsTTS(scenes[i].narration, elKey, audioPath, voiceIdToUse);
+      } else {
+        await generateTTSChunk(scenes[i].narration, tts_voice, tts_model, apiKey, audioPath);
+      }
       sceneAudioFiles.push(audioPath);
     }
 
