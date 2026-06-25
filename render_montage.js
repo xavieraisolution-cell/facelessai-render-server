@@ -62,13 +62,13 @@ async function mergeListInPairs(files, transitionDuration, tmpDir, label) {
  * @param {Array<{image: string, duration: number}>} scenes
  * @param {string} audioFile
  * @param {string} outputFile
- * @param {object} opts - { transitionDuration=0.8, fps=25, size='1080x1920', zoomRate=0.0012, maxZoom=1.15 }
+ * @param {object} opts - { transitionDuration=0.8, fps=25, size='1280x720', zoomRate=0.0012, maxZoom=1.15 }
  */
 async function gerarMontagem(scenes, audioFile, outputFile, opts = {}) {
   const {
     transitionDuration = 0.8,
     fps = 25,
-    size = '1080x1920', // vertical 9:16 -- necessário pra classificação automática como YouTube Short (vídeos horizontais nunca qualificam, independente da duração) e compatível sem reencode com TikTok/Instagram Reels/Facebook Reels
+    size = '1280x720', // default horizontal -- preserva o comportamento do Football Untold. Canais que precisam de vertical (ex: Broke & In Love) DEVEM passar size explicitamente via opts/payload.
     zoomRate = 0.0012,
     maxZoom = 1.15,
     tmpDir = '/tmp',
