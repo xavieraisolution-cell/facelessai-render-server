@@ -1159,6 +1159,33 @@ app.post('/upload-image', authMiddleware, async (req, res) => {
   }
 });
 
+// Recorta + redimensiona uma imagem para o aspect ratio exato pedido (crop central, sem distorção),
+// usado para corrigir thumbnails geradas pelo gpt-image-1 (que só aceita 1536x1024 / 1024x1536 / 1024x1024 --
+// nenhum desses é 16:9 exato) antes de enviar para o YouTube, que historicamente rejeita com erro 500 genérico
+// proporções fora de 16:9 em thumbnails.set, sem mensagem de erro clara.
+app.post('/resize-image', authMiddleware, async (req, res) => {
+  const tmpIn = `/tmp/resize_in_${Date.now()}_${Math.random().toString(36).slice(2)}.png`;
+  const tmpOut = `/tmp/resize_out_${Date.now()}_${Math.random().toString(36).slice(2)}.jpg`;
+  try {
+    const { image_base64, width = 1280, height = 720 } = req.body;
+    if (!image_base64) return res.status(400).json({ error: 'image_base64 required' });
+    fs.writeFileSync(tmpIn, Buffer.from(image_base64, 'base64'));
+    // force_original_aspect_ratio=increase + crop = preenche o quadro de destino cortando o excesso,
+    // em vez de esmagar a imagem (mesma técnica já usada em render_montage.js para vídeo).
+    execSync(
+      `ffmpeg -y -i "${tmpIn}" -vf "scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height}" -q:v 2 "${tmpOut}"`,
+      { timeout: 30000 }
+    );
+    const outBuffer = fs.readFileSync(tmpOut);
+    res.json({ image_base64: outBuffer.toString('base64'), width, height });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  } finally {
+    try { fs.unlinkSync(tmpIn); } catch {}
+    try { fs.unlinkSync(tmpOut); } catch {}
+  }
+});
+
 app.post('/render', authMiddleware, async (req, res) => {
   const jobId = req.body.job_id || `job_${Date.now()}`;
   jobs[jobId] = { status: 'queued', progress: 'Na fila...', created_at: new Date().toISOString() };
