@@ -28,7 +28,6 @@ const TELEGRAM_TOKEN   = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const ELEVENLABS_KEY   = process.env.ELEVENLABS_KEY;
 const OPENAI_API_KEY   = process.env.OPENAI_API_KEY;
-const RAUNAK_M_VOICE_ID = process.env.RAUNAK_M_VOICE_ID || 'oHxj8sUpVpscBK7Mmroq'; // voz "Raunak M – Viral & Relatable Reel Voice", padrão do canal Broke & In Love
 
 // ── Validação de boot: falha rápido e claro se faltar credencial crítica ──
 const REQUIRED_ENV = ['AUTH_KEY', 'R2_ACCOUNT_ID', 'R2_ACCESS_KEY', 'R2_SECRET_KEY', 'SUPABASE_KEY'];
@@ -247,13 +246,13 @@ function httpsRequest(options, body) {
 }
 
 // ── Supabase ───────────────────────────────────────────────────
-async function updateSupabase(jobId, data, table = 'facelessai_jobs') {
+async function updateSupabase(jobId, data) {
   try {
     const body = JSON.stringify(data);
     const url = new URL(SUPABASE_URL);
-    await httpsRequest({
+    const result = await httpsRequest({
       hostname: url.hostname,
-      path: `/rest/v1/${table}?job_id=eq.${jobId}`,
+      path: `/rest/v1/facelessai_jobs?job_id=eq.${jobId}`,
       method: 'PATCH',
       headers: {
         // sb_secret_... NÃO é JWT — vai só no header apikey.
@@ -263,25 +262,31 @@ async function updateSupabase(jobId, data, table = 'facelessai_jobs') {
         'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'Prefer': 'return=minimal'
       },
     }, body);
-  } catch(e) { console.warn(`[${jobId}] Falha Supabase (${table}): ${e.message}`); }
+    if (result.statusCode >= 300) {
+      console.warn(`[${jobId}] Falha Supabase (HTTP ${result.statusCode}): ${result.body.toString().substring(0, 400)}`);
+    }
+  } catch(e) { console.warn(`[${jobId}] Falha Supabase: ${e.message}`); }
 }
 
 // INSERT inicial — sem isso, o PATCH do updateSupabase() nunca acha a linha pra atualizar
 // (PATCH em filtro que não bate com nenhuma linha simplesmente não faz nada, sem erro).
-async function createSupabaseJob(jobId, data, table = 'facelessai_jobs') {
+async function createSupabaseJob(jobId, data) {
   try {
     const body = JSON.stringify({ job_id: jobId, status: 'processing', ...data, created_at: new Date().toISOString() });
     const url = new URL(SUPABASE_URL);
-    await httpsRequest({
+    const result = await httpsRequest({
       hostname: url.hostname,
-      path: `/rest/v1/${table}`,
+      path: `/rest/v1/facelessai_jobs`,
       method: 'POST',
       headers: {
         'apikey': SUPABASE_KEY,
         'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'Prefer': 'return=minimal'
       },
     }, body);
-  } catch(e) { console.warn(`[${jobId}] Falha ao criar job no Supabase (${table}): ${e.message}`); }
+    if (result.statusCode >= 300) {
+      console.warn(`[${jobId}] Falha ao criar job no Supabase (HTTP ${result.statusCode}): ${result.body.toString().substring(0, 400)}`);
+    }
+  } catch(e) { console.warn(`[${jobId}] Falha ao criar job no Supabase: ${e.message}`); }
 }
 
 // ── R2 Sign ────────────────────────────────────────────────────
@@ -624,12 +629,6 @@ async function createTikTokProduct(jobId, data) {
 
     const tiktokTitle = cleanVal(data.tiktok_title) || title;
 
-    // DESATIVADO 22/06/2026: essa notificação duplicava a mensagem que o n8n já manda
-    // (node "Telegram Product Review") após o Poll Product Status confirmar o job completo.
-    // Os dados (pdf_url, cover_url, mockup_urls) continuam sendo gravados acima e disponíveis
-    // via /tiktok/status/:jobId — só o envio direto pelo Telegram foi desligado aqui.
-    // Para reativar, descomente o bloco abaixo.
-    /*
     await sendTelegram(
       `✅ <b>Produto criado — Revisao necessaria!</b>\n\n` +
       `📄 <b>${title}</b>\n` +
@@ -640,7 +639,6 @@ async function createTikTokProduct(jobId, data) {
       [[{ text: '✅ Aprovar — Criar videos', callback_data: `approve_${jobId}` }],
        [{ text: '❌ Refazer produto',         callback_data: `redo_product_${jobId}` }]]
     );
-    */
   } catch(error) {
     console.error(`[TikTok Prod ${jobId}]`, error.message);
     tiktokJobs[jobId].status = 'failed';
@@ -824,12 +822,6 @@ async function createTikTokVideo(jobId, data) {
     tiktokJobs[jobId].step      = 'done';
     tiktokJobs[jobId].video_url = videoUrl;
 
-    // DESATIVADO 22/06/2026: duplicava a mensagem que o n8n manda (node "Send a text message")
-    // depois do HTTP Request1 confirmar o job completo. O callback_data aqui usava jobId
-    // (formato vid_XXXXX), diferente do Record ID que o fluxo do n8n espera — outro motivo
-    // pra essa notificação não ser a fonte de verdade. video_url continua disponível via
-    // /tiktok/status/:jobId. Para reativar, descomente o bloco abaixo.
-    /*
     await sendTelegram(
       `🎬 <b>Video TikTok pronto!</b>\n\n` +
       `📦 ${product_title}\n` +
@@ -839,7 +831,6 @@ async function createTikTokVideo(jobId, data) {
       [[{ text: '✅ Postado!', callback_data: `posted_${jobId}` },
         { text: '❌ Refazer',  callback_data: `redo_${jobId}` }]]
     );
-    */
     console.log(`[${jobId}] Video concluido: ${videoUrl}`);
 
   } catch(error) {
@@ -985,43 +976,24 @@ async function processMontageJob(jobId, data) {
       tts_voice = 'alloy',
       tts_model = 'tts-1',
       transition_duration = 0.8,
-      tts_provider,            // novo: 'elevenlabs' | 'openai' (default openai se ausente)
-      elevenlabs_voice_id,     // novo: voice_id específico, sobrepõe RAUNAK_M_VOICE_ID se vier
-      elevenlabs_api_key,      // novo: permite passar a key via payload também, além do env
-      size,                    // novo: resolução do vídeo, ex: '1080x1920' para vertical (Shorts/TikTok/Reels). Se ausente, gerarMontagem() usa o default horizontal 1280x720 -- NÃO afeta canais que não enviam esse campo.
     } = data;
 
     if (!Array.isArray(scenes) || scenes.length < 2) {
       throw new Error('Precisa de um array "scenes" com no mínimo 2 itens (cada um com image_url e narration)');
     }
 
-    // Decide o provedor de TTS sem fallback silencioso: se foi pedido ElevenLabs
-    // e faltar a key, falha com erro claro em vez de cair pra OpenAI sem avisar.
-    const useElevenLabs = tts_provider === 'elevenlabs' || !!elevenlabs_voice_id;
-    const elKey = elevenlabs_api_key || ELEVENLABS_KEY;
-    const voiceIdToUse = elevenlabs_voice_id || RAUNAK_M_VOICE_ID;
-
-    let apiKey = null;
-    if (useElevenLabs) {
-      if (!elKey) throw new Error('tts_provider=elevenlabs (ou elevenlabs_voice_id) foi pedido, mas nenhuma ELEVENLABS_KEY/elevenlabs_api_key está configurada. Abortando -- sem fallback automático pra OpenAI.');
-    } else {
-      apiKey = openai_api_key || OPENAI_API_KEY;
-      if (!apiKey) throw new Error('Nenhuma OPENAI_API_KEY disponível para gerar a narração');
-    }
+    const apiKey = openai_api_key || OPENAI_API_KEY;
+    if (!apiKey) throw new Error('Nenhuma OPENAI_API_KEY disponível para gerar a narração');
 
     jobs[jobId].video_title = video_title;
-    await createSupabaseJob(jobId, { video_title: sanitizeTitle(video_title), source: 'image_montage', player_name: player_name || null }, 'brokeinlove_jobs');
+    await createSupabaseJob(jobId, { video_title: sanitizeTitle(video_title), source: 'image_montage', player_name: player_name || null });
 
     // 1. TTS por cena — isso dá a duração REAL de cada cena (não estimativa por contagem de palavras)
     const sceneAudioFiles = [];
     for (let i = 0; i < scenes.length; i++) {
       jobs[jobId].progress = `Gerando narração da cena ${i + 1}/${scenes.length}...`;
       const audioPath = path.join(jobDir, `scene_audio_${i}.mp3`);
-      if (useElevenLabs) {
-        await elevenLabsTTS(scenes[i].narration, elKey, audioPath, voiceIdToUse);
-      } else {
-        await generateTTSChunk(scenes[i].narration, tts_voice, tts_model, apiKey, audioPath);
-      }
+      await generateTTSChunk(scenes[i].narration, tts_voice, tts_model, apiKey, audioPath);
       sceneAudioFiles.push(audioPath);
     }
 
@@ -1054,7 +1026,7 @@ async function processMontageJob(jobId, data) {
     // 5. Renderiza: zoom (Ken Burns) + crossfade entre cenas, sincronizado com a narração
     jobs[jobId].progress = 'Renderizando vídeo (zoom + transições)...';
     const outputPath = path.join(jobDir, 'output.mp4');
-    await gerarMontagem(scenesWithDuration, narrationPath, outputPath, { transitionDuration: transition_duration, tmpDir: jobDir, ...(size ? { size } : {}) });
+    await gerarMontagem(scenesWithDuration, narrationPath, outputPath, { transitionDuration: transition_duration, tmpDir: jobDir });
 
     // 6. Upload pro R2
     jobs[jobId].progress = 'Enviando para R2...';
@@ -1066,12 +1038,12 @@ async function processMontageJob(jobId, data) {
     jobs[jobId].video_url = publicUrl;
     jobs[jobId].source = 'image_montage';
 
-    await updateSupabase(jobId, { status: 'completed', video_url: publicUrl, video_title: sanitizeTitle(video_title), updated_at: new Date().toISOString() }, 'brokeinlove_jobs');
+    await updateSupabase(jobId, { status: 'completed', video_url: publicUrl, video_title: sanitizeTitle(video_title), updated_at: new Date().toISOString() });
   } catch (error) {
     console.error(`[${jobId}] ERRO (montagem):`, error.message);
     jobs[jobId].status = 'failed';
     jobs[jobId].error = error.message;
-    await updateSupabase(jobId, { status: 'failed', error: error.message }, 'brokeinlove_jobs');
+    await updateSupabase(jobId, { status: 'failed', error: error.message });
   } finally {
     try { execSync(`rm -rf "${jobDir}"`); } catch {}
   }
@@ -1156,33 +1128,6 @@ app.post('/upload-image', authMiddleware, async (req, res) => {
     res.json({ url });
   } catch (e) {
     res.status(500).json({ error: e.message });
-  }
-});
-
-// Recorta + redimensiona uma imagem para o aspect ratio exato pedido (crop central, sem distorção),
-// usado para corrigir thumbnails geradas pelo gpt-image-1 (que só aceita 1536x1024 / 1024x1536 / 1024x1024 --
-// nenhum desses é 16:9 exato) antes de enviar para o YouTube, que historicamente rejeita com erro 500 genérico
-// proporções fora de 16:9 em thumbnails.set, sem mensagem de erro clara.
-app.post('/resize-image', authMiddleware, async (req, res) => {
-  const tmpIn = `/tmp/resize_in_${Date.now()}_${Math.random().toString(36).slice(2)}.png`;
-  const tmpOut = `/tmp/resize_out_${Date.now()}_${Math.random().toString(36).slice(2)}.jpg`;
-  try {
-    const { image_base64, width = 1280, height = 720 } = req.body;
-    if (!image_base64) return res.status(400).json({ error: 'image_base64 required' });
-    fs.writeFileSync(tmpIn, Buffer.from(image_base64, 'base64'));
-    // force_original_aspect_ratio=increase + crop = preenche o quadro de destino cortando o excesso,
-    // em vez de esmagar a imagem (mesma técnica já usada em render_montage.js para vídeo).
-    execSync(
-      `ffmpeg -y -i "${tmpIn}" -vf "scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height}" -q:v 2 "${tmpOut}"`,
-      { timeout: 30000 }
-    );
-    const outBuffer = fs.readFileSync(tmpOut);
-    res.json({ image_base64: outBuffer.toString('base64'), width, height });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  } finally {
-    try { fs.unlinkSync(tmpIn); } catch {}
-    try { fs.unlinkSync(tmpOut); } catch {}
   }
 });
 
