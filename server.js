@@ -1,5 +1,7 @@
 const express = require('express');
-const { execSync } = require('child_process');
+const { execSync, exec } = require('child_process');
+const util = require('util');
+const execAsync = util.promisify(exec);
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
@@ -246,13 +248,13 @@ function httpsRequest(options, body) {
 }
 
 // ── Supabase ───────────────────────────────────────────────────
-async function updateSupabase(jobId, data) {
+async function updateSupabase(jobId, data, tableName = 'facelessai_jobs') {
   try {
     const body = JSON.stringify(data);
     const url = new URL(SUPABASE_URL);
     const result = await httpsRequest({
       hostname: url.hostname,
-      path: `/rest/v1/facelessai_jobs?job_id=eq.${jobId}`,
+      path: `/rest/v1/${tableName}?job_id=eq.${jobId}`,
       method: 'PATCH',
       headers: {
         // sb_secret_... NÃO é JWT — vai só no header apikey.
@@ -263,20 +265,20 @@ async function updateSupabase(jobId, data) {
       },
     }, body);
     if (result.statusCode >= 300) {
-      console.warn(`[${jobId}] Falha Supabase (HTTP ${result.statusCode}): ${result.body.toString().substring(0, 400)}`);
+      console.warn(`[${jobId}] Falha Supabase (HTTP ${result.statusCode}, tabela ${tableName}): ${result.body.toString().substring(0, 400)}`);
     }
   } catch(e) { console.warn(`[${jobId}] Falha Supabase: ${e.message}`); }
 }
 
 // INSERT inicial — sem isso, o PATCH do updateSupabase() nunca acha a linha pra atualizar
 // (PATCH em filtro que não bate com nenhuma linha simplesmente não faz nada, sem erro).
-async function createSupabaseJob(jobId, data) {
+async function createSupabaseJob(jobId, data, tableName = 'facelessai_jobs') {
   try {
     const body = JSON.stringify({ job_id: jobId, status: 'processing', ...data, created_at: new Date().toISOString() });
     const url = new URL(SUPABASE_URL);
     const result = await httpsRequest({
       hostname: url.hostname,
-      path: `/rest/v1/facelessai_jobs`,
+      path: `/rest/v1/${tableName}`,
       method: 'POST',
       headers: {
         'apikey': SUPABASE_KEY,
@@ -284,7 +286,7 @@ async function createSupabaseJob(jobId, data) {
       },
     }, body);
     if (result.statusCode >= 300) {
-      console.warn(`[${jobId}] Falha ao criar job no Supabase (HTTP ${result.statusCode}): ${result.body.toString().substring(0, 400)}`);
+      console.warn(`[${jobId}] Falha ao criar job no Supabase (HTTP ${result.statusCode}, tabela ${tableName}): ${result.body.toString().substring(0, 400)}`);
     }
   } catch(e) { console.warn(`[${jobId}] Falha ao criar job no Supabase: ${e.message}`); }
 }
@@ -964,6 +966,7 @@ async function processJob(jobId, data) {
 async function processMontageJob(jobId, data) {
   const jobDir = `/tmp/${jobId}`;
   fs.mkdirSync(jobDir, { recursive: true });
+  let safeTableName = 'facelessai_jobs'; // declarado fora do try — o catch também precisa usar essa variável
   try {
     jobs[jobId].status = 'processing';
     jobs[jobId].progress = 'Iniciando montagem...';
@@ -972,36 +975,50 @@ async function processMontageJob(jobId, data) {
       scenes,
       video_title = 'FacelessAI',
       player_name,
+      table_name = 'facelessai_jobs',
       openai_api_key,
       tts_voice = 'alloy',
       tts_model = 'tts-1',
+      tts_provider = 'openai',
+      elevenlabs_voice_id,
+      size = '1280x720',
       transition_duration = 0.8,
     } = data;
+
+    // Sanitização defensiva — table_name vai direto na URL do REST da Supabase,
+    // não deixa nada fora de [a-zA-Z0-9_] passar.
+    safeTableName = /^[a-zA-Z0-9_]+$/.test(table_name) ? table_name : 'facelessai_jobs';
 
     if (!Array.isArray(scenes) || scenes.length < 2) {
       throw new Error('Precisa de um array "scenes" com no mínimo 2 itens (cada um com image_url e narration)');
     }
 
+    const useElevenLabs = tts_provider === 'elevenlabs';
     const apiKey = openai_api_key || OPENAI_API_KEY;
-    if (!apiKey) throw new Error('Nenhuma OPENAI_API_KEY disponível para gerar a narração');
+    if (!useElevenLabs && !apiKey) throw new Error('Nenhuma OPENAI_API_KEY disponível para gerar a narração');
+    if (useElevenLabs && !ELEVENLABS_KEY) throw new Error('tts_provider="elevenlabs" mas ELEVENLABS_KEY não está configurada no servidor');
 
     jobs[jobId].video_title = video_title;
-    await createSupabaseJob(jobId, { video_title: sanitizeTitle(video_title), source: 'image_montage', player_name: player_name || null });
+    await createSupabaseJob(jobId, { video_title: sanitizeTitle(video_title), source: 'image_montage', player_name: player_name || null }, safeTableName);
 
     // 1. TTS por cena — isso dá a duração REAL de cada cena (não estimativa por contagem de palavras)
     const sceneAudioFiles = [];
     for (let i = 0; i < scenes.length; i++) {
       jobs[jobId].progress = `Gerando narração da cena ${i + 1}/${scenes.length}...`;
       const audioPath = path.join(jobDir, `scene_audio_${i}.mp3`);
-      await generateTTSChunk(scenes[i].narration, tts_voice, tts_model, apiKey, audioPath);
+      if (useElevenLabs) {
+        await elevenLabsTTS(scenes[i].narration, ELEVENLABS_KEY, audioPath, elevenlabs_voice_id || undefined);
+      } else {
+        await generateTTSChunk(scenes[i].narration, tts_voice, tts_model, apiKey, audioPath);
+      }
       sceneAudioFiles.push(audioPath);
     }
 
     // 2. Mede a duração real de cada áudio de cena via ffprobe
     const scenesWithDuration = [];
     for (let i = 0; i < scenes.length; i++) {
-      const d = execSync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${sceneAudioFiles[i]}"`, { timeout: 30000 }).toString().trim();
-      const duration = parseFloat(d) || 4;
+      const { stdout: d } = await execAsync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${sceneAudioFiles[i]}"`, { timeout: 30000 });
+      const duration = parseFloat(d.trim()) || 4;
       scenesWithDuration.push({ ...scenes[i], duration });
     }
 
@@ -1021,12 +1038,13 @@ async function processMontageJob(jobId, data) {
     const concatListPath = path.join(jobDir, 'audio_concat.txt');
     fs.writeFileSync(concatListPath, sceneAudioFiles.map(p => `file '${p}'`).join('\n'));
     const narrationPath = path.join(jobDir, 'narration.mp3');
-    execSync(`ffmpeg -y -f concat -safe 0 -i "${concatListPath}" -c copy "${narrationPath}"`, { timeout: 120000 });
+    await execAsync(`ffmpeg -y -f concat -safe 0 -i "${concatListPath}" -c copy "${narrationPath}"`, { timeout: 120000 });
 
     // 5. Renderiza: zoom (Ken Burns) + crossfade entre cenas, sincronizado com a narração
     jobs[jobId].progress = 'Renderizando vídeo (zoom + transições)...';
     const outputPath = path.join(jobDir, 'output.mp4');
-    await gerarMontagem(scenesWithDuration, narrationPath, outputPath, { transitionDuration: transition_duration, tmpDir: jobDir });
+    const safeSize = /^\d+x\d+$/.test(size) ? size : '1280x720';
+    await gerarMontagem(scenesWithDuration, narrationPath, outputPath, { transitionDuration: transition_duration, tmpDir: jobDir, size: safeSize });
 
     // 6. Upload pro R2
     jobs[jobId].progress = 'Enviando para R2...';
@@ -1038,14 +1056,14 @@ async function processMontageJob(jobId, data) {
     jobs[jobId].video_url = publicUrl;
     jobs[jobId].source = 'image_montage';
 
-    await updateSupabase(jobId, { status: 'completed', video_url: publicUrl, video_title: sanitizeTitle(video_title), updated_at: new Date().toISOString() });
+    await updateSupabase(jobId, { status: 'completed', video_url: publicUrl, video_title: sanitizeTitle(video_title), updated_at: new Date().toISOString() }, safeTableName);
   } catch (error) {
     console.error(`[${jobId}] ERRO (montagem):`, error.message);
     jobs[jobId].status = 'failed';
     jobs[jobId].error = error.message;
-    await updateSupabase(jobId, { status: 'failed', error: error.message });
+    await updateSupabase(jobId, { status: 'failed', error: error.message }, safeTableName);
   } finally {
-    try { execSync(`rm -rf "${jobDir}"`); } catch {}
+    try { await execAsync(`rm -rf "${jobDir}"`); } catch {}
   }
 }
 
@@ -1128,6 +1146,32 @@ app.post('/upload-image', authMiddleware, async (req, res) => {
     res.json({ url });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// Redimensiona/corta uma imagem base64 pra um tamanho exato (ex: thumbnail 16:9
+// a partir de uma imagem do DALL-E em outra proporção). Usa o mesmo padrão de
+// scale+crop já usado em outras partes do arquivo (force_original_aspect_ratio=increase
+// garante que a imagem cobre o quadro todo antes de cortar, sem distorcer).
+app.post('/resize-image', authMiddleware, async (req, res) => {
+  const tmpIn = `/tmp/resize_in_${Date.now()}_${Math.random().toString(36).slice(2)}.png`;
+  const tmpOut = `/tmp/resize_out_${Date.now()}_${Math.random().toString(36).slice(2)}.jpg`;
+  try {
+    const { image_base64, target_size } = req.body;
+    if (!image_base64 || !target_size) return res.status(400).json({ error: 'image_base64 and target_size required (ex: "1280x720")' });
+    const [W, H] = target_size.split('x').map(Number);
+    if (!W || !H) return res.status(400).json({ error: 'target_size deve ser no formato LARGURAxALTURA, ex: 1280x720' });
+
+    fs.writeFileSync(tmpIn, Buffer.from(image_base64, 'base64'));
+    await execAsync(`ffmpeg -y -i "${tmpIn}" -vf "scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}" "${tmpOut}"`, { timeout: 30000 });
+    const resizedBase64 = fs.readFileSync(tmpOut).toString('base64');
+
+    res.json({ image_base64: resizedBase64 });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  } finally {
+    try { fs.unlinkSync(tmpIn); } catch {}
+    try { fs.unlinkSync(tmpOut); } catch {}
   }
 });
 
