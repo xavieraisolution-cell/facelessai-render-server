@@ -12,14 +12,16 @@ const { gerarMontagem } = require('./render_montage');
 const app = express();
 app.use(express.json({ limit: '50mb' }));
 
-// ── Edge TTS Setup (roda uma vez no boot) ─────────────────────
+// ── Edge TTS Setup ─────────────────────────────────────────────
+// Usa @andresaya/edge-tts (npm) — sem dependência de Python, sem API key.
+// Adicione "@andresaya/edge-tts": "*" ao package.json antes de deploy.
+let EdgeTTS;
 try {
-  execSync('edge-tts --version', { stdio: 'ignore' });
-  console.log('[Boot] edge-tts já instalado.');
+  EdgeTTS = require("@andresaya/edge-tts").EdgeTTS;
+  console.log("[Boot] @andresaya/edge-tts disponível.");
 } catch {
-  console.log('[Boot] Instalando edge-tts...');
-  execSync('pip install edge-tts --break-system-packages --quiet', { stdio: 'inherit' });
-  console.log('[Boot] edge-tts instalado com sucesso.');
+  console.error("[Boot] @andresaya/edge-tts não encontrado. Adicione ao package.json e redeploy.");
+  process.exit(1);
 }
 
 // ── CREDENCIAIS — todas via process.env, sem fallback literal ──
@@ -358,25 +360,21 @@ function splitIntoChunks(text, maxChars = 4000) {
 }
 
 // ── Edge TTS (substitui OpenAI TTS — gratuito, sem API key) ───
+// Usa @andresaya/edge-tts (npm) — pura Node.js, sem Python, sem CLI.
+//
 // Vozes recomendadas por canal:
 //   MisterIA (PT-BR): pt-BR-AntonioNeural (M) ou pt-BR-FranciscaNeural (F)
 //   WealthAI (EN):    en-US-GuyNeural (M) ou en-US-AriaNeural (F)
 //   HistoryAI (EN):   en-US-GuyNeural (M)
 //   ScienceAI (EN):   en-US-GuyNeural (M)
 //
-// Para usar, altere tts_voice no node "Pexels + Render" do n8n:
+// Altere tts_voice no node "Pexels + Render" do n8n:
 //   MisterIA  → pt-BR-AntonioNeural
 //   demais    → en-US-GuyNeural
 //
-// NOTA: openai_api_key ainda é aceito no payload mas NÃO é mais usado para TTS.
-// Continua sendo usado apenas para gpt-image-1 (thumbnails TikTok).
+// NOTA: openai_api_key no payload é ignorado para TTS — usado apenas para gpt-image-1.
 async function generateTTSChunk(text, voice, model, apiKey, outputPath) {
-  // Salva o texto em arquivo temporário para evitar problemas de escaping
-  // com aspas, acentos, caracteres especiais do português e texto longo
-  const textFile = outputPath + '.txt';
-  fs.writeFileSync(textFile, text, 'utf8');
-
-  // Mapeia vozes legadas para Edge TTS (compatibilidade com payloads antigos)
+  // Mapeia vozes legadas OpenAI para Edge TTS (compatibilidade com payloads antigos)
   const voiceMap = {
     'alloy':   'en-US-GuyNeural',
     'nova':    'en-US-AriaNeural',
@@ -385,16 +383,11 @@ async function generateTTSChunk(text, voice, model, apiKey, outputPath) {
     'onyx':    'en-US-ChristopherNeural',
     'shimmer': 'en-US-JennyNeural',
   };
-  const edgeVoice = voiceMap[voice] || voice; // se já for nome Edge, usa direto
+  const edgeVoice = voiceMap[voice] || voice;
 
-  try {
-    await execAsync(
-      `edge-tts --voice "${edgeVoice}" --file "${textFile}" --write-media "${outputPath}"`,
-      { timeout: 120000 }
-    );
-  } finally {
-    try { fs.unlinkSync(textFile); } catch {}
-  }
+  const tts = new EdgeTTS();
+  await tts.synthesize(text, edgeVoice, {});
+  await tts.toFile(outputPath);
 }
 
 // ── Telegram ───────────────────────────────────────────────────
