@@ -13,13 +13,12 @@ const app = express();
 app.use(express.json({ limit: '50mb' }));
 
 // ── Edge TTS Setup (roda uma vez no boot) ─────────────────────
-const { execSync: execSyncBoot } = require('child_process');
 try {
-  execSyncBoot('edge-tts --version', { stdio: 'ignore' });
+  execSync('edge-tts --version', { stdio: 'ignore' });
   console.log('[Boot] edge-tts já instalado.');
 } catch {
   console.log('[Boot] Instalando edge-tts...');
-  execSyncBoot('pip install edge-tts --break-system-packages --quiet', { stdio: 'inherit' });
+  execSync('pip install edge-tts --break-system-packages --quiet', { stdio: 'inherit' });
   console.log('[Boot] edge-tts instalado com sucesso.');
 }
 
