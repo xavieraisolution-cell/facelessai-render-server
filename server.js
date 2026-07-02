@@ -12,17 +12,13 @@ const { gerarMontagem } = require('./render_montage');
 const app = express();
 app.use(express.json({ limit: '50mb' }));
 
-// ── Edge TTS Setup ─────────────────────────────────────────────
-// Usa @andresaya/edge-tts (npm) — sem dependência de Python, sem API key.
-// Adicione "@andresaya/edge-tts": "*" ao package.json antes de deploy.
-let EdgeTTS;
-try {
-  EdgeTTS = require("@andresaya/edge-tts").EdgeTTS;
-  console.log("[Boot] @andresaya/edge-tts disponível.");
-} catch {
-  console.error("[Boot] @andresaya/edge-tts não encontrado. Adicione ao package.json e redeploy.");
+// ── Google TTS Boot Check ──────────────────────────────────────
+// Valida que a GOOGLE_TTS_API_KEY está configurada no ambiente.
+if (!process.env.GOOGLE_TTS_API_KEY) {
+  console.error('[Boot] GOOGLE_TTS_API_KEY não encontrada. Configure no painel do Render e redeploy.');
   process.exit(1);
 }
+console.log('[Boot] Google Cloud TTS configurado.');
 
 // ── CREDENCIAIS — todas via process.env, sem fallback literal ──
 const AUTH_KEY        = process.env.AUTH_KEY;
@@ -359,35 +355,56 @@ function splitIntoChunks(text, maxChars = 4000) {
   return finalChunks;
 }
 
-// ── Edge TTS (substitui OpenAI TTS — gratuito, sem API key) ───
-// Usa @andresaya/edge-tts (npm) — pura Node.js, sem Python, sem CLI.
-//
-// Vozes recomendadas por canal:
-//   MisterIA (PT-BR): pt-BR-AntonioNeural (M) ou pt-BR-FranciscaNeural (F)
-//   WealthAI (EN):    en-US-GuyNeural (M) ou en-US-AriaNeural (F)
-//   HistoryAI (EN):   en-US-GuyNeural (M)
-//   ScienceAI (EN):   en-US-GuyNeural (M)
+// ── Google Cloud TTS (gratuito até 1M chars/mês) ──────────────
+// Vozes por canal:
+//   MisterIA (PT-BR): pt-BR-Standard-B (M) ou pt-BR-Standard-A (F)
+//   WealthAI (EN):    en-US-Standard-D (M)
+//   HistoryAI (EN):   en-US-Standard-D (M)
+//   ScienceAI (EN):   en-US-Standard-D (M)
 //
 // Altere tts_voice no node "Pexels + Render" do n8n:
-//   MisterIA  → pt-BR-AntonioNeural
-//   demais    → en-US-GuyNeural
+//   MisterIA  → pt-BR-Standard-B
+//   demais    → en-US-Standard-D
 //
-// NOTA: openai_api_key no payload é ignorado para TTS — usado apenas para gpt-image-1.
+// NOTA: openai_api_key no payload continua sendo usado para gpt-image-1 (thumbnails).
 async function generateTTSChunk(text, voice, model, apiKey, outputPath) {
-  // Mapeia vozes legadas OpenAI para Edge TTS (compatibilidade com payloads antigos)
-  const voiceMap = {
-    'alloy':   'en-US-GuyNeural',
-    'nova':    'en-US-AriaNeural',
-    'echo':    'en-US-GuyNeural',
-    'fable':   'en-GB-RyanNeural',
-    'onyx':    'en-US-ChristopherNeural',
-    'shimmer': 'en-US-JennyNeural',
-  };
-  const edgeVoice = voiceMap[voice] || voice;
+  const googleTTSKey = process.env.GOOGLE_TTS_API_KEY;
+  if (!googleTTSKey) throw new Error('GOOGLE_TTS_API_KEY não configurada no ambiente');
 
-  const tts = new EdgeTTS();
-  await tts.synthesize(text, edgeVoice, {});
-  await tts.toFile(outputPath);
+  // Mapeia vozes legadas e Edge TTS para Google TTS
+  const voiceMap = {
+    'alloy':                { languageCode: 'en-US', name: 'en-US-Standard-D' },
+    'nova':                 { languageCode: 'en-US', name: 'en-US-Standard-C' },
+    'echo':                 { languageCode: 'en-US', name: 'en-US-Standard-D' },
+    'fable':                { languageCode: 'en-GB', name: 'en-GB-Standard-B' },
+    'onyx':                 { languageCode: 'en-US', name: 'en-US-Standard-B' },
+    'shimmer':              { languageCode: 'en-US', name: 'en-US-Standard-C' },
+    'en-US-GuyNeural':      { languageCode: 'en-US', name: 'en-US-Standard-D' },
+    'en-US-AriaNeural':     { languageCode: 'en-US', name: 'en-US-Standard-C' },
+    'pt-BR-AntonioNeural':  { languageCode: 'pt-BR', name: 'pt-BR-Standard-B' },
+    'pt-BR-FranciscaNeural':{ languageCode: 'pt-BR', name: 'pt-BR-Standard-A' },
+    'en-US-Standard-D':     { languageCode: 'en-US', name: 'en-US-Standard-D' },
+    'pt-BR-Standard-B':     { languageCode: 'pt-BR', name: 'pt-BR-Standard-B' },
+  };
+  const voiceConfig = voiceMap[voice] || { languageCode: 'en-US', name: 'en-US-Standard-D' };
+
+  const body = JSON.stringify({
+    input: { text },
+    voice: voiceConfig,
+    audioConfig: { audioEncoding: 'MP3' }
+  });
+
+  const result = await httpsRequest({
+    hostname: 'texttospeech.googleapis.com',
+    path: `/v1/text:synthesize?key=${googleTTSKey}`,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+  }, body);
+
+  const data = JSON.parse(result.body.toString());
+  if (data.error) throw new Error(`Google TTS error: ${JSON.stringify(data.error)}`);
+  if (!data.audioContent) throw new Error(`Google TTS: resposta sem audioContent: ${result.body.toString().substring(0, 200)}`);
+  fs.writeFileSync(outputPath, Buffer.from(data.audioContent, 'base64'));
 }
 
 // ── Telegram ───────────────────────────────────────────────────
@@ -1068,9 +1085,9 @@ async function processMontageJob(jobId, data) {
 
 app.get('/health', (req, res) => {
   res.json({
-    status: 'ok', version: '6.8-edge-tts',
+    status: 'ok', version: '6.9-google-tts',
     storage: 'Cloudflare R2', db: 'Supabase',
-    tts: 'Edge TTS (gratuito)',
+    tts: 'Google Cloud TTS (free tier)',
     features: ['kling', 'pexels', 'queue', 'tiktok-shop', 'edge-tts'],
     queue: { length: jobQueue.length, processing: isProcessing },
     tiktok_jobs: Object.keys(tiktokJobs).length,
@@ -1217,7 +1234,7 @@ app.get('/tiktok/jobs', authMiddleware, (req, res) => {
 app.post('/tiktok/test-telegram', authMiddleware, async (req, res) => {
   try {
     await sendTelegram(
-      '🤖 <b>TikTok Shop Bot ativo! v6.8-edge-tts</b>\n\nSeu sistema de automacao esta funcionando.\n\nTTS: Edge TTS (gratuito)',
+      '🤖 <b>TikTok Shop Bot ativo! v6.9-google-tts</b>\n\nSeu sistema de automacao esta funcionando.\n\nTTS: Edge TTS (gratuito)',
       [[{ text: '✅ Recebi!', callback_data: 'test_ok' }]]
     );
     res.json({ ok: true, message: 'Telegram message sent' });
@@ -1226,7 +1243,7 @@ app.post('/tiktok/test-telegram', authMiddleware, async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`FacelessAI + TikTok Shop Render Server v6.8-edge-tts na porta ${PORT}`);
-  console.log(`TTS: Edge TTS (gratuito) para FacelessAI | OpenAI/ElevenLabs mantidos para TikTok Shop`);
+  console.log(`FacelessAI + TikTok Shop Render Server v6.9-google-tts na porta ${PORT}`);
+  console.log(`TTS: Google Cloud TTS (free tier) para FacelessAI | OpenAI/ElevenLabs mantidos para TikTok Shop`);
   console.log(`Credenciais: AUTH_KEY, R2_*, SUPABASE_KEY — todas via process.env`);
 });
