@@ -7,14 +7,23 @@ const path = require('path');
 const https = require('https');
 const http = require('http');
 const crypto = require('crypto');
-const { gerarMontagem } = require('./render_montage'); // módulo de zoom+crossfade pra imagens estáticas
+const { gerarMontagem } = require('./render_montage');
 
 const app = express();
 app.use(express.json({ limit: '50mb' }));
 
-// ── CREDENCIAIS — TODAS vêm exclusivamente de process.env, sem fallback literal.
-// Se faltar alguma no painel do Render (Environment), o servidor deve falhar
-// alto e claro, não silenciosamente usar um valor hardcoded. ────────────────
+// ── Edge TTS Setup (roda uma vez no boot) ─────────────────────
+const { execSync: execSyncBoot } = require('child_process');
+try {
+  execSyncBoot('edge-tts --version', { stdio: 'ignore' });
+  console.log('[Boot] edge-tts já instalado.');
+} catch {
+  console.log('[Boot] Instalando edge-tts...');
+  execSyncBoot('pip install edge-tts --break-system-packages --quiet', { stdio: 'inherit' });
+  console.log('[Boot] edge-tts instalado com sucesso.');
+}
+
+// ── CREDENCIAIS — todas via process.env, sem fallback literal ──
 const AUTH_KEY        = process.env.AUTH_KEY;
 const R2_ACCOUNT_ID   = process.env.R2_ACCOUNT_ID;
 const R2_ACCESS_KEY   = process.env.R2_ACCESS_KEY;
@@ -24,20 +33,16 @@ const R2_PUBLIC_URL   = process.env.R2_PUBLIC_URL   || 'https://pub-5a163e6e8655
 const SUPABASE_URL    = process.env.SUPABASE_URL    || 'https://fnzzqfffzvlffgilfpoz.supabase.co';
 const SUPABASE_KEY    = process.env.SUPABASE_KEY;
 
-// ── TikTok Shop Config ─────────────────────────────────────────
-// Todas as credenciais sensíveis vêm SOMENTE do environment do Render (nunca hardcoded)
 const TELEGRAM_TOKEN   = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const ELEVENLABS_KEY   = process.env.ELEVENLABS_KEY;
 const OPENAI_API_KEY   = process.env.OPENAI_API_KEY;
-const RAUNAK_M_VOICE_ID = process.env.RAUNAK_M_VOICE_ID || 'oHxj8sUpVpscBK7Mmroq'; // voz "Raunak M – Viral & Relatable Reel Voice", padrão do canal Broke & In Love
+const RAUNAK_M_VOICE_ID = process.env.RAUNAK_M_VOICE_ID || 'oHxj8sUpVpscBK7Mmroq';
 
-// ── Validação de boot: falha rápido e claro se faltar credencial crítica ──
 const REQUIRED_ENV = ['AUTH_KEY', 'R2_ACCOUNT_ID', 'R2_ACCESS_KEY', 'R2_SECRET_KEY', 'SUPABASE_KEY'];
 const missingEnv = REQUIRED_ENV.filter(k => !process.env[k]);
 if (missingEnv.length > 0) {
   console.error(`[BOOT] Faltam variáveis de ambiente obrigatórias: ${missingEnv.join(', ')}`);
-  console.error('[BOOT] Configura essas no painel do Render (Environment) antes de subir o serviço.');
   process.exit(1);
 }
 
@@ -258,9 +263,6 @@ async function updateSupabase(jobId, data, table = 'facelessai_jobs') {
       path: `/rest/v1/${table}?job_id=eq.${jobId}`,
       method: 'PATCH',
       headers: {
-        // sb_secret_... NÃO é JWT — vai só no header apikey.
-        // Authorization: Bearer foi removido de propósito: com a key nova,
-        // a Supabase rejeita a requisição se esse header estiver presente.
         'apikey': SUPABASE_KEY,
         'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'Prefer': 'return=minimal'
       },
@@ -271,8 +273,6 @@ async function updateSupabase(jobId, data, table = 'facelessai_jobs') {
   } catch(e) { console.warn(`[${jobId}] Falha Supabase (${table}): ${e.message}`); }
 }
 
-// INSERT inicial — sem isso, o PATCH do updateSupabase() nunca acha a linha pra atualizar
-// (PATCH em filtro que não bate com nenhuma linha simplesmente não faz nada, sem erro).
 async function createSupabaseJob(jobId, data, table = 'facelessai_jobs') {
   try {
     const body = JSON.stringify({ job_id: jobId, status: 'processing', ...data, created_at: new Date().toISOString() });
@@ -358,17 +358,47 @@ function splitIntoChunks(text, maxChars = 4000) {
   return finalChunks;
 }
 
+// ── Edge TTS (substitui OpenAI TTS — gratuito, sem API key) ───
+// Vozes recomendadas por canal:
+//   MisterIA (PT-BR): pt-BR-AntonioNeural (M) ou pt-BR-FranciscaNeural (F)
+//   WealthAI (EN):    en-US-GuyNeural (M) ou en-US-AriaNeural (F)
+//   HistoryAI (EN):   en-US-GuyNeural (M)
+//   ScienceAI (EN):   en-US-GuyNeural (M)
+//
+// Para usar, altere tts_voice no node "Pexels + Render" do n8n:
+//   MisterIA  → pt-BR-AntonioNeural
+//   demais    → en-US-GuyNeural
+//
+// NOTA: openai_api_key ainda é aceito no payload mas NÃO é mais usado para TTS.
+// Continua sendo usado apenas para gpt-image-1 (thumbnails TikTok).
 async function generateTTSChunk(text, voice, model, apiKey, outputPath) {
-  const body = JSON.stringify({ model, input: text, voice, response_format: 'mp3' });
-  const result = await httpsRequest({
-    hostname: 'api.openai.com', path: '/v1/audio/speech', method: 'POST',
-    headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
-  }, body);
-  if (result.statusCode !== 200) throw new Error(`OpenAI TTS error ${result.statusCode}: ${result.body.toString()}`);
-  fs.writeFileSync(outputPath, result.body);
+  // Salva o texto em arquivo temporário para evitar problemas de escaping
+  // com aspas, acentos, caracteres especiais do português e texto longo
+  const textFile = outputPath + '.txt';
+  fs.writeFileSync(textFile, text, 'utf8');
+
+  // Mapeia vozes legadas para Edge TTS (compatibilidade com payloads antigos)
+  const voiceMap = {
+    'alloy':   'en-US-GuyNeural',
+    'nova':    'en-US-AriaNeural',
+    'echo':    'en-US-GuyNeural',
+    'fable':   'en-GB-RyanNeural',
+    'onyx':    'en-US-ChristopherNeural',
+    'shimmer': 'en-US-JennyNeural',
+  };
+  const edgeVoice = voiceMap[voice] || voice; // se já for nome Edge, usa direto
+
+  try {
+    await execAsync(
+      `edge-tts --voice "${edgeVoice}" --file "${textFile}" --write-media "${outputPath}"`,
+      { timeout: 120000 }
+    );
+  } finally {
+    try { fs.unlinkSync(textFile); } catch {}
+  }
 }
 
-// ── Telegram ── CORRIGIDO v6.7: sem cleanVal no texto ─────────
+// ── Telegram ───────────────────────────────────────────────────
 function sendTelegram(text, buttons = null) {
   if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID) return Promise.resolve();
   return new Promise((resolve) => {
@@ -395,7 +425,7 @@ function sendTelegram(text, buttons = null) {
   });
 }
 
-// ── DALL-E ── v6.7: usa gpt-image-1, salva b64_json direto ───
+// ── DALL-E ─────────────────────────────────────────────────────
 function dalleGenerate(prompt, apiKey, size = '1024x1024', outputPath = null) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({ model: 'gpt-image-1', prompt, n: 1, size });
@@ -409,17 +439,14 @@ function dalleGenerate(prompt, apiKey, size = '1024x1024', outputPath = null) {
         try {
           const data = JSON.parse(Buffer.concat(chunks).toString());
           if (data.error) return reject(new Error('Image API error: ' + data.error.message));
-          // gpt-image-1 retorna b64_json
           const b64 = data.data?.[0]?.b64_json;
           if (b64) {
             if (outputPath) {
               require('fs').writeFileSync(outputPath, Buffer.from(b64, 'base64'));
               return resolve(outputPath);
             }
-            // Retorna data URL para compatibilidade
             return resolve('data:image/png;base64,' + b64);
           }
-          // Fallback: tenta url se existir
           const url = data.data?.[0]?.url;
           if (url) return resolve(url);
           reject(new Error('Image API no data: ' + JSON.stringify(data).substring(0,200)));
@@ -432,7 +459,7 @@ function dalleGenerate(prompt, apiKey, size = '1024x1024', outputPath = null) {
   });
 }
 
-// ── OpenAI TTS ────────────────────────────────────────────────
+// ── OpenAI TTS (mantido APENAS para TikTok Shop — não usado no FacelessAI) ──
 function openaiTTS(text, apiKey, outputPath, voice = 'nova') {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({ model: 'tts-1', input: text, voice, response_format: 'mp3' });
@@ -630,25 +657,6 @@ async function createTikTokProduct(jobId, data) {
     tiktokJobs[jobId].cover_url   = coverUrl;
     tiktokJobs[jobId].mockup_urls = mockupUrls;
 
-    const tiktokTitle = cleanVal(data.tiktok_title) || title;
-
-    // DESATIVADO 22/06/2026: essa notificação duplicava a mensagem que o n8n já manda
-    // (node "Telegram Product Review") após o Poll Product Status confirmar o job completo.
-    // Os dados (pdf_url, cover_url, mockup_urls) continuam sendo gravados acima e disponíveis
-    // via /tiktok/status/:jobId — só o envio direto pelo Telegram foi desligado aqui.
-    // Para reativar, descomente o bloco abaixo.
-    /*
-    await sendTelegram(
-      `✅ <b>Produto criado — Revisao necessaria!</b>\n\n` +
-      `📄 <b>${title}</b>\n` +
-      (productUrl ? `\n📎 <a href="${productUrl}">Ver Produto</a>` : '') +
-      (coverUrl   ? `\n🖼 <a href="${coverUrl}">Ver Capa</a>` : '') +
-      (mockupUrls.phone ? `\n📱 <a href="${mockupUrls.phone}">Mockup Phone</a>` : '') +
-      `\n\nTitulo TikTok:\n<i>${tiktokTitle}</i>\n\nAprove para criar os videos:`,
-      [[{ text: '✅ Aprovar — Criar videos', callback_data: `approve_${jobId}` }],
-       [{ text: '❌ Refazer produto',         callback_data: `redo_product_${jobId}` }]]
-    );
-    */
   } catch(error) {
     console.error(`[TikTok Prod ${jobId}]`, error.message);
     tiktokJobs[jobId].status = 'failed';
@@ -685,9 +693,9 @@ async function createTikTokVideo(jobId, data) {
     const elKey     = ELEVENLABS_KEY || data.elevenlabs_key || '';
     const W = 1080, H = 1920;
 
-    console.log(`[${jobId}] Criando video: "${product_title}" | angulo ${angle} | OPENAI: ${apiKey ? 'OK' : 'MISSING'}`);
+    console.log(`[${jobId}] Criando video TikTok: "${product_title}" | angulo ${angle}`);
 
-    // 1. Narração
+    // 1. Narração — TikTok Shop continua usando OpenAI TTS ou ElevenLabs (não Edge TTS)
     tiktokJobs[jobId].step = 'generating_audio';
     const audioPath = path.join(jobDir, 'narration.mp3');
     const narText = narration ||
@@ -702,7 +710,6 @@ async function createTikTokVideo(jobId, data) {
       const d = execSync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${audioPath}"`, { timeout: 15000 }).toString().trim();
       audioDuration = parseFloat(d) || 45;
     } catch {}
-    console.log(`[${jobId}] Audio: ${audioDuration.toFixed(1)}s`);
 
     // 2. Imagens DALL-E
     tiktokJobs[jobId].step = 'generating_images';
@@ -719,7 +726,6 @@ async function createTikTokVideo(jobId, data) {
         const imgPath = path.join(jobDir, `scene_${i}.png`);
         await dalleGenerate(imagePrompts[i], apiKey, '1024x1536', imgPath);
         sceneImages.push(imgPath);
-        console.log(`[${jobId}] Imagem ${i+1}/4 gerada`);
       } catch(e) { console.warn(`[${jobId}] Img ${i}: ${e.message}`); }
     }
 
@@ -738,8 +744,6 @@ async function createTikTokVideo(jobId, data) {
 
     // 4. Clips
     tiktokJobs[jobId].step = 'creating_clips';
-    // Total scene duration = audioDuration + 5s buffer to never cut audio
-    const totalScenes = 5;
     const lastDur = Math.max(15, audioDuration - 33);
     const sceneDurations = [4, 12, 12, 10, lastDur];
     const sceneFiles     = [...sceneImages];
@@ -820,7 +824,6 @@ async function createTikTokVideo(jobId, data) {
     fs.writeFileSync(concatTxt, overlayClips.filter(p => fs.existsSync(p)).map(p => `file '${p}'`).join('\n'));
     const silentMp4 = path.join(jobDir, 'silent.mp4');
     execSync(`ffmpeg -y -f concat -safe 0 -i "${concatTxt}" -c:v libx264 -preset fast -pix_fmt yuv420p "${silentMp4}"`, { timeout: 300000 });
-    // Trim video to exact audio duration to avoid cutoff
     const finalMp4 = path.join(jobDir, 'final.mp4');
     execSync(`ffmpeg -y -i "${silentMp4}" -i "${audioPath}" -map 0:v -map 1:a -c:v libx264 -preset fast -pix_fmt yuv420p -c:a aac -b:a 128k -t ${audioDuration} "${finalMp4}"`, { timeout: 180000 });
 
@@ -831,24 +834,7 @@ async function createTikTokVideo(jobId, data) {
     tiktokJobs[jobId].status    = 'completed';
     tiktokJobs[jobId].step      = 'done';
     tiktokJobs[jobId].video_url = videoUrl;
-
-    // DESATIVADO 22/06/2026: duplicava a mensagem que o n8n manda (node "Send a text message")
-    // depois do HTTP Request1 confirmar o job completo. O callback_data aqui usava jobId
-    // (formato vid_XXXXX), diferente do Record ID que o fluxo do n8n espera — outro motivo
-    // pra essa notificação não ser a fonte de verdade. video_url continua disponível via
-    // /tiktok/status/:jobId. Para reativar, descomente o bloco abaixo.
-    /*
-    await sendTelegram(
-      `🎬 <b>Video TikTok pronto!</b>\n\n` +
-      `📦 ${product_title}\n` +
-      `🎯 Angulo ${angle + 1}\n` +
-      `🔗 <a href="${videoUrl}">Download do video</a>\n\n` +
-      `Poste no TikTok quando estiver pronto!`,
-      [[{ text: '✅ Postado!', callback_data: `posted_${jobId}` },
-        { text: '❌ Refazer',  callback_data: `redo_${jobId}` }]]
-    );
-    */
-    console.log(`[${jobId}] Video concluido: ${videoUrl}`);
+    console.log(`[${jobId}] Video TikTok concluido: ${videoUrl}`);
 
   } catch(error) {
     console.error(`[TikTok Vid ${jobId}]`, error.message);
@@ -867,16 +853,25 @@ async function processJob(jobId, data) {
   try {
     jobs[jobId].status = 'processing';
     jobs[jobId].progress = 'Iniciando...';
-    const { script, video_clips, openai_api_key, tts_voice = 'alloy', tts_model = 'tts-1', audio_url, video_title = 'FacelessAI', pexels_api_key, pexels_query, source = 'kling', language = 'en-US' } = data;
+    const {
+      script, video_clips, openai_api_key,
+      tts_voice = 'en-US-GuyNeural', // Edge TTS voice — manter compatibilidade com 'alloy' via voiceMap dentro de generateTTSChunk
+      tts_model = 'tts-1',           // ignorado pelo Edge TTS, mantido para não quebrar payloads existentes
+      audio_url, video_title = 'FacelessAI',
+      pexels_api_key, pexels_query,
+      source = 'kling', language = 'en-US'
+    } = data;
     jobs[jobId].video_title = video_title;
+
     let finalAudioPath = path.join(jobDir, 'final_audio.mp3');
-    if (script && openai_api_key) {
-      jobs[jobId].progress = 'Gerando audio TTS...';
+    if (script) {
+      jobs[jobId].progress = 'Gerando audio TTS (Edge TTS)...';
       const chunks = splitIntoChunks(script, 4000);
       const chunkPaths = [];
       for (let i = 0; i < chunks.length; i++) {
         const chunkPath = path.join(jobDir, `chunk_${i}.mp3`);
         jobs[jobId].progress = `TTS chunk ${i+1}/${chunks.length}...`;
+        // openai_api_key passado aqui por compatibilidade de assinatura mas não é usado pelo Edge TTS
         await generateTTSChunk(chunks[i], tts_voice, tts_model, openai_api_key, chunkPath);
         chunkPaths.push(chunkPath);
       }
@@ -884,7 +879,7 @@ async function processJob(jobId, data) {
       else {
         const listFile = path.join(jobDir, 'chunks.txt');
         fs.writeFileSync(listFile, chunkPaths.map(p => `file '${p}'`).join('\n'));
-        execSync(`ffmpeg -y -f concat -safe 0 -i "${listFile}" -c copy "${finalAudioPath}"`, { timeout: 120000 });
+        await execAsync(`ffmpeg -y -f concat -safe 0 -i "${listFile}" -c copy "${finalAudioPath}"`, { timeout: 120000 });
       }
     } else if (audio_url) {
       jobs[jobId].progress = 'Baixando audio...';
@@ -894,14 +889,14 @@ async function processJob(jobId, data) {
     jobs[jobId].progress = 'Calculando duracao...';
     let audioDuration;
     try {
-      const d = execSync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${finalAudioPath}"`, { timeout: 30000 }).toString().trim();
-      audioDuration = parseFloat(d);
+      const { stdout: d } = await execAsync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${finalAudioPath}"`, { timeout: 30000 });
+      audioDuration = parseFloat(d.trim());
       if (isNaN(audioDuration) || audioDuration <= 0) throw new Error('Duracao invalida');
     } catch(e) {
       const wavPath = path.join(jobDir, 'audio_check.wav');
-      execSync(`ffmpeg -y -i "${finalAudioPath}" "${wavPath}"`, { timeout: 60000 });
-      const d = execSync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${wavPath}"`, { timeout: 30000 }).toString().trim();
-      audioDuration = parseFloat(d);
+      await execAsync(`ffmpeg -y -i "${finalAudioPath}" "${wavPath}"`, { timeout: 60000 });
+      const { stdout: d } = await execAsync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${wavPath}"`, { timeout: 30000 });
+      audioDuration = parseFloat(d.trim());
       fs.unlinkSync(wavPath);
     }
 
@@ -933,7 +928,7 @@ async function processJob(jobId, data) {
     const normalizedPaths = [];
     for (let i = 0; i < clipPaths.length; i++) {
       const normPath = path.join(jobDir, `norm_${i}.mp4`);
-      execSync(`ffmpeg -y -i "${clipPaths[i]}" -vf "scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,setsar=1" -r 30 -an -c:v libx264 -preset ultrafast -crf 28 "${normPath}"`, { timeout: 600000 });
+      await execAsync(`ffmpeg -y -i "${clipPaths[i]}" -vf "scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,setsar=1" -r 30 -an -c:v libx264 -preset ultrafast -crf 28 "${normPath}"`, { timeout: 600000 });
       normalizedPaths.push(normPath);
     }
 
@@ -945,18 +940,21 @@ async function processJob(jobId, data) {
       for (const np of normalizedPaths) {
         if (totalDuration >= audioDuration) break;
         let clipDur = 10;
-        try { const cd = execSync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${np}"`, { timeout: 30000 }).toString().trim(); clipDur = parseFloat(cd) || 10; } catch {}
+        try {
+          const { stdout: cd } = await execAsync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${np}"`, { timeout: 30000 });
+          clipDur = parseFloat(cd.trim()) || 10;
+        } catch {}
         loopEntries.push(`file '${np}'`);
         totalDuration += clipDur;
       }
     }
     fs.writeFileSync(loopListFile, loopEntries.join('\n'));
     const loopedVideoPath = path.join(jobDir, 'looped_video.mp4');
-    execSync(`ffmpeg -y -f concat -safe 0 -i "${loopListFile}" -t ${audioDuration} -c:v libx264 -preset ultrafast -crf 28 "${loopedVideoPath}"`, { timeout: 900000 });
+    await execAsync(`ffmpeg -y -f concat -safe 0 -i "${loopListFile}" -t ${audioDuration} -c:v libx264 -preset ultrafast -crf 28 "${loopedVideoPath}"`, { timeout: 900000 });
 
     jobs[jobId].progress = 'Mesclando video e audio...';
     const outputPath = path.join(jobDir, 'output.mp4');
-    execSync(`ffmpeg -y -i "${loopedVideoPath}" -i "${finalAudioPath}" -map 0:v -map 1:a -c:v copy -c:a aac -shortest "${outputPath}"`, { timeout: 300000 });
+    await execAsync(`ffmpeg -y -i "${loopedVideoPath}" -i "${finalAudioPath}" -map 0:v -map 1:a -c:v copy -c:a aac -shortest "${outputPath}"`, { timeout: 300000 });
 
     jobs[jobId].progress = 'Enviando para R2...';
     const r2Key     = `${jobId}.mp4`;
@@ -973,7 +971,7 @@ async function processJob(jobId, data) {
     jobs[jobId].error  = error.message;
     await updateSupabase(jobId, { status: 'failed', error: error.message });
   } finally {
-    try { execSync(`rm -rf "${jobDir}"`); } catch {}
+    try { await execAsync(`rm -rf "${jobDir}"`); } catch {}
   }
 }
 
@@ -981,51 +979,37 @@ async function processJob(jobId, data) {
 async function processMontageJob(jobId, data) {
   const jobDir = `/tmp/${jobId}`;
   fs.mkdirSync(jobDir, { recursive: true });
-  let safeTableName = 'facelessai_jobs'; // fora do try -- o catch também usa essa variável
+  let safeTableName = 'facelessai_jobs';
   try {
     jobs[jobId].status = 'processing';
     jobs[jobId].progress = 'Iniciando montagem...';
 
     const {
-      scenes,
-      video_title = 'FacelessAI',
-      player_name,
-      table_name = 'facelessai_jobs', // qual canal usa qual tabela -- Football Untold não precisa mandar isso, fica no padrão
-      openai_api_key,
-      tts_voice = 'alloy',
-      tts_model = 'tts-1',
+      scenes, video_title = 'FacelessAI', player_name,
+      table_name = 'facelessai_jobs',
+      openai_api_key, tts_voice = 'en-US-GuyNeural', tts_model = 'tts-1',
       transition_duration = 0.8,
-      tts_provider,            // novo: 'elevenlabs' | 'openai' (default openai se ausente)
-      elevenlabs_voice_id,     // novo: voice_id específico, sobrepõe RAUNAK_M_VOICE_ID se vier
-      elevenlabs_api_key,      // novo: permite passar a key via payload também, além do env
-      size,                    // novo: resolução do vídeo, ex: '1080x1920' para vertical (Shorts/TikTok/Reels). Se ausente, gerarMontagem() usa o default horizontal 1280x720 -- NÃO afeta canais que não enviam esse campo.
+      tts_provider, elevenlabs_voice_id, elevenlabs_api_key, size,
     } = data;
 
-    // Sanitização defensiva — table_name vai direto na URL do REST da Supabase.
     safeTableName = /^[a-zA-Z0-9_]+$/.test(table_name) ? table_name : 'facelessai_jobs';
 
     if (!Array.isArray(scenes) || scenes.length < 2) {
-      throw new Error('Precisa de um array "scenes" com no mínimo 2 itens (cada um com image_url e narration)');
+      throw new Error('Precisa de um array "scenes" com no mínimo 2 itens');
     }
 
-    // Decide o provedor de TTS sem fallback silencioso: se foi pedido ElevenLabs
-    // e faltar a key, falha com erro claro em vez de cair pra OpenAI sem avisar.
     const useElevenLabs = tts_provider === 'elevenlabs' || !!elevenlabs_voice_id;
     const elKey = elevenlabs_api_key || ELEVENLABS_KEY;
     const voiceIdToUse = elevenlabs_voice_id || RAUNAK_M_VOICE_ID;
 
-    let apiKey = null;
-    if (useElevenLabs) {
-      if (!elKey) throw new Error('tts_provider=elevenlabs (ou elevenlabs_voice_id) foi pedido, mas nenhuma ELEVENLABS_KEY/elevenlabs_api_key está configurada. Abortando -- sem fallback automático pra OpenAI.');
-    } else {
-      apiKey = openai_api_key || OPENAI_API_KEY;
-      if (!apiKey) throw new Error('Nenhuma OPENAI_API_KEY disponível para gerar a narração');
+    if (useElevenLabs && !elKey) {
+      throw new Error('tts_provider=elevenlabs foi pedido, mas nenhuma ELEVENLABS_KEY está configurada.');
     }
 
     jobs[jobId].video_title = video_title;
     await createSupabaseJob(jobId, { video_title: sanitizeTitle(video_title), source: 'image_montage', player_name: player_name || null }, safeTableName);
 
-    // 1. TTS por cena — isso dá a duração REAL de cada cena (não estimativa por contagem de palavras)
+    // TTS por cena
     const sceneAudioFiles = [];
     for (let i = 0; i < scenes.length; i++) {
       jobs[jobId].progress = `Gerando narração da cena ${i + 1}/${scenes.length}...`;
@@ -1033,12 +1017,12 @@ async function processMontageJob(jobId, data) {
       if (useElevenLabs) {
         await elevenLabsTTS(scenes[i].narration, elKey, audioPath, voiceIdToUse);
       } else {
-        await generateTTSChunk(scenes[i].narration, tts_voice, tts_model, apiKey, audioPath);
+        // Edge TTS para montagem também
+        await generateTTSChunk(scenes[i].narration, tts_voice, tts_model, openai_api_key, audioPath);
       }
       sceneAudioFiles.push(audioPath);
     }
 
-    // 2. Mede a duração real de cada áudio de cena via ffprobe
     const scenesWithDuration = [];
     for (let i = 0; i < scenes.length; i++) {
       const { stdout: d } = await execAsync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${sceneAudioFiles[i]}"`, { timeout: 30000 });
@@ -1046,7 +1030,6 @@ async function processMontageJob(jobId, data) {
       scenesWithDuration.push({ ...scenes[i], duration });
     }
 
-    // 3. Baixa (ou copia) a imagem de cada cena
     jobs[jobId].progress = 'Baixando imagens das cenas...';
     for (let i = 0; i < scenesWithDuration.length; i++) {
       const scene = scenesWithDuration[i];
@@ -1057,19 +1040,16 @@ async function processMontageJob(jobId, data) {
       scene.image = imgPath;
     }
 
-    // 4. Concatena os áudios de cada cena, na mesma ordem, pra formar a narração final
     jobs[jobId].progress = 'Montando narração final...';
     const concatListPath = path.join(jobDir, 'audio_concat.txt');
     fs.writeFileSync(concatListPath, sceneAudioFiles.map(p => `file '${p}'`).join('\n'));
     const narrationPath = path.join(jobDir, 'narration.mp3');
     await execAsync(`ffmpeg -y -f concat -safe 0 -i "${concatListPath}" -c copy "${narrationPath}"`, { timeout: 120000 });
 
-    // 5. Renderiza: zoom (Ken Burns) + crossfade entre cenas, sincronizado com a narração
     jobs[jobId].progress = 'Renderizando vídeo (zoom + transições)...';
     const outputPath = path.join(jobDir, 'output.mp4');
     await gerarMontagem(scenesWithDuration, narrationPath, outputPath, { transitionDuration: transition_duration, tmpDir: jobDir, ...(size ? { size } : {}) });
 
-    // 6. Upload pro R2
     jobs[jobId].progress = 'Enviando para R2...';
     const r2Key = `${jobId}.mp4`;
     const publicUrl = await uploadToR2(outputPath, r2Key);
@@ -1091,14 +1071,15 @@ async function processMontageJob(jobId, data) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// ROTAS — FacelessAI
+// ROTAS
 // ═══════════════════════════════════════════════════════════════
 
 app.get('/health', (req, res) => {
   res.json({
-    status: 'ok', version: '6.7',
+    status: 'ok', version: '6.8-edge-tts',
     storage: 'Cloudflare R2', db: 'Supabase',
-    features: ['kling', 'pexels', 'queue', 'tiktok-shop'],
+    tts: 'Edge TTS (gratuito)',
+    features: ['kling', 'pexels', 'queue', 'tiktok-shop', 'edge-tts'],
     queue: { length: jobQueue.length, processing: isProcessing },
     tiktok_jobs: Object.keys(tiktokJobs).length,
     openai_configured: !!OPENAI_API_KEY
@@ -1172,10 +1153,6 @@ app.post('/upload-image', authMiddleware, async (req, res) => {
   }
 });
 
-// Recorta + redimensiona uma imagem para o aspect ratio exato pedido (crop central, sem distorção),
-// usado para corrigir thumbnails geradas pelo gpt-image-1 (que só aceita 1536x1024 / 1024x1536 / 1024x1024 --
-// nenhum desses é 16:9 exato) antes de enviar para o YouTube, que historicamente rejeita com erro 500 genérico
-// proporções fora de 16:9 em thumbnails.set, sem mensagem de erro clara.
 app.post('/resize-image', authMiddleware, async (req, res) => {
   const tmpIn = `/tmp/resize_in_${Date.now()}_${Math.random().toString(36).slice(2)}.png`;
   const tmpOut = `/tmp/resize_out_${Date.now()}_${Math.random().toString(36).slice(2)}.jpg`;
@@ -1183,8 +1160,6 @@ app.post('/resize-image', authMiddleware, async (req, res) => {
     const { image_base64, width = 1280, height = 720 } = req.body;
     if (!image_base64) return res.status(400).json({ error: 'image_base64 required' });
     fs.writeFileSync(tmpIn, Buffer.from(image_base64, 'base64'));
-    // force_original_aspect_ratio=increase + crop = preenche o quadro de destino cortando o excesso,
-    // em vez de esmagar a imagem (mesma técnica já usada em render_montage.js para vídeo).
     await execAsync(
       `ffmpeg -y -i "${tmpIn}" -vf "scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height}" -q:v 2 "${tmpOut}"`,
       { timeout: 30000 }
@@ -1218,10 +1193,6 @@ app.get('/queue', authMiddleware, (req, res) => {
   res.json({ queue_length: jobQueue.length, is_processing: isProcessing, pending_jobs: jobQueue.map(j => j.jobId) });
 });
 
-// ═══════════════════════════════════════════════════════════════
-// ROTAS — TikTok Shop
-// ═══════════════════════════════════════════════════════════════
-
 app.post('/tiktok/create-product', authMiddleware, (req, res) => {
   const data = req.body;
   if (!data?.title) return res.status(400).json({ error: 'title required' });
@@ -1254,17 +1225,16 @@ app.get('/tiktok/jobs', authMiddleware, (req, res) => {
 app.post('/tiktok/test-telegram', authMiddleware, async (req, res) => {
   try {
     await sendTelegram(
-      '🤖 <b>TikTok Shop Bot ativo! v6.7</b>\n\nSeu sistema de automacao esta funcionando.\n\nAguarde as notificacoes toda segunda-feira as 7h.',
+      '🤖 <b>TikTok Shop Bot ativo! v6.8-edge-tts</b>\n\nSeu sistema de automacao esta funcionando.\n\nTTS: Edge TTS (gratuito)',
       [[{ text: '✅ Recebi!', callback_data: 'test_ok' }]]
     );
     res.json({ ok: true, message: 'Telegram message sent' });
   } catch(e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 
-// ═══════════════════════════════════════════════════════════════
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`FacelessAI + TikTok Shop Render Server v6.7 na porta ${PORT}`);
-  console.log(`Fixes v6.7: sendTelegram sem cleanVal | DALL-E sem response_format | OPENAI_API_KEY apenas do env`);
-  console.log(`Credenciais: AUTH_KEY, R2_*, SUPABASE_KEY, TELEGRAM_*, ELEVENLABS_KEY — todas via process.env, sem fallback`);
+  console.log(`FacelessAI + TikTok Shop Render Server v6.8-edge-tts na porta ${PORT}`);
+  console.log(`TTS: Edge TTS (gratuito) para FacelessAI | OpenAI/ElevenLabs mantidos para TikTok Shop`);
+  console.log(`Credenciais: AUTH_KEY, R2_*, SUPABASE_KEY — todas via process.env`);
 });
